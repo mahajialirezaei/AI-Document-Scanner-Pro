@@ -4,6 +4,8 @@
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.9+-ee4c2c?logo=pytorch)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+https://github.com/mahajialirezaei/CNN-Applications-Doc-Scanning-And-Enhancement
+
 A complete deep learning pipeline for automatic document scanning and enhancement from smartphone photos. This system performs corner detection, perspective correction, and image enhancement to transform casual document photos into professional scanned documents.
 
 ## 🌟 Features

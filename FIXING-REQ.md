@@ -2,6 +2,7 @@
 **Target Audience:** AI Development Agent
 **Objective:** Refactor and fix critical compliance flaws and architectural deviations identified in the codebase. The implementation must strictly adhere to the requirements of the "Document Scanning Enhancement" project.
 
+https://github.com/mahajialirezaei/CNN-Applications-Doc-Scanning-And-Enhancement
 
 target branch: refactor/synthetic-pipeline-and-e2e
 then merge it to develop

@@ -1,5 +1,7 @@
 # Data Structure Documentation
 
+https://github.com/mahajialirezaei/CNN-Applications-Doc-Scanning-And-Enhancement
+
 This document outlines the exact directory structure and contents of the datasets used in the Document Scanning & Enhancement project. The dataset is strictly divided into two logical segments: Synthetic Data Generation (Training/Validation) and Real-World Evaluation (Testing).
 
 ## 1. Synthetic Data Generation Sources (Training & Validation)
