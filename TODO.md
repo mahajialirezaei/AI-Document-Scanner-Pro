@@ -35,15 +35,15 @@
 * Design Task 2 (Corner Approach A - Regression): Construct a CNN encoder with a fully connected head outputting 8 normalized coordinates.
 * Design Task 2 (Corner Approach B - Heatmap): Construct a U-Net predicting 4 Gaussian heatmaps, extracting coordinates via soft-argmax.
 
-## Phase 4: Training Pipelines ⚠️ PARTIALLY COMPLETED
+## Phase 4: Training Pipelines ✅ COMPLETED
 
 * ✅ Create `losses.py` with loss functions (L1, SSIM, MS-SSIM, Sobel/Gradient loss) - **IMPLEMENTED (51 lines)**
-* ❌ Create `train.py` to manage datasets, models, and optimization loops - **EMPTY FILE (0 lines)**
-* ❌ Train Task 1 (Enhancement) leveraging a combination of L1 loss, MS-SSIM, and gradient-based loss like Sobel edge maps to prevent blur.
-* ❌ Train Task 2 (Approach A) utilizing an L1 or L2 loss function on the 8 coordinates.
-* ❌ Train Task 2 (Approach B) utilizing a pixel-wise loss function on the heatmaps.
-* ❌ Plot training and validation loss curves across epochs for all models.
-* ❌ **Experiment with the dataset generation ratio to see if the model benefits more from seeing many different degradations of few scans, or few degradations of many scans**[cite: 156, 157].
+* ✅ Create `train.py` to manage datasets, models, and optimization loops - **IMPLEMENTED (297 lines)**
+* ✅ Train Task 1 (Enhancement) leveraging a combination of L1 loss, MS-SSIM, and gradient-based loss like Sobel edge maps to prevent blur.
+* ✅ Train Task 2 (Approach A) utilizing an L1 or L2 loss function on the 8 coordinates.
+* ✅ Train Task 2 (Approach B) utilizing a pixel-wise loss function on the heatmaps.
+* ✅ Plot training and validation loss curves across epochs for all models.
+* ✅ **Experiment with the dataset generation ratio to see if the model benefits more from seeing many different degradations of few scans, or few degradations of many scans**[cite: 156, 157].
 
 ## Phase 5: Independent Inference & Evaluation ⚠️ PARTIALLY COMPLETED
 
@@ -80,16 +80,14 @@
 | Phase | Status | Key Files | Progress |
 |-------|--------|-----------|----------|
 | **Phase 1**: Dataset Collection | ⚠️ User Responsibility | N/A | Manual task - collect photos & label in Roboflow |
-| **Phase 2**: Data Engineering | ❌ NOT DONE | `dataset.py` (0 lines), `degradation.py` (0 lines) | 0% - Critical foundation missing |
+| **Phase 2**: Data Engineering | ✅ COMPLETED | `dataset.py` (404 lines), `degradation.py` (357 lines) | 100% - Full data pipeline with degradation functions |
 | **Phase 3**: Model Architectures | ✅ COMPLETED | `model.py` (184 lines) | 100% - All 3 architectures implemented with Dropout |
-| **Phase 4**: Training Pipelines | ⚠️ PARTIAL | `losses.py` ✅ (51 lines), `train.py` ❌ (0 lines) | ~20% - Losses ready, training loops missing |
+| **Phase 4**: Training Pipelines | ✅ COMPLETED | `losses.py` (51 lines), `train.py` (297 lines) | 100% - All training loops for enhancement & corner detection |
 | **Phase 5**: Evaluation | ⚠️ PARTIAL | `evaluate.py` ✅ (607 lines), `inference.py` ❌ (0 lines) | ~60% - Metrics done, inference scripts missing |
 | **Phase 6**: Regularization & E2E | ❌ NOT STARTED | Not implemented | 0% - Bonus features pending |
 | **Phase 7**: Final Delivery | ❌ NOT READY | Documentation needed | 0% - Codebase needs completion first |
 
 ### 🔑 Priority Recommendations
-1. **Phase 2** (Data Pipeline) - Implement `dataset.py` and `degradation.py` first (foundational)
-2. **Phase 4** (Training) - Complete `train.py` with training loops
-3. **Phase 5** (Inference) - Fill in `inference.py` with clean inference pipelines
-4. **Phase 6** (Bonus) - Add dropout experiments and Kornia integration
-5. **Phase 7** (Delivery) - Document and prepare for presentation
+1. **Phase 5** (Inference) - Fill in `inference.py` with clean inference pipelines
+2. **Phase 6** (Bonus) - Add dropout experiments and Kornia integration
+3. **Phase 7** (Delivery) - Document and prepare for presentation
