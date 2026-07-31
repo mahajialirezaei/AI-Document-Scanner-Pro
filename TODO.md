@@ -35,7 +35,7 @@
 * Design Task 2 (Corner Approach A - Regression): Construct a CNN encoder with a fully connected head outputting 8 normalized coordinates.
 * Design Task 2 (Corner Approach B - Heatmap): Construct a U-Net predicting 4 Gaussian heatmaps, extracting coordinates via soft-argmax.
 
-## Phase 4: Training Pipelines
+## Phase 4: Training Pipelines ✅ COMPLETED
 
 * Create `train.py` to manage datasets, models, and optimization loops.
 * Train Task 1 (Enhancement) leveraging a combination of L1 loss, MS-SSIM, and gradient-based loss like Sobel edge maps to prevent blur.
