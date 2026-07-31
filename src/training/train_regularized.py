@@ -1,6 +1,11 @@
 """
-Phase 6: Regularization Strategies for Robust Training
-Implements Dropout Scheduling, Data Augmentation with Kornia, and Robust Loss Functions
+Phase 6: Regularization Strategies for Document Scanning Models
+
+This module implements advanced regularization techniques including:
+- Dynamic Dropout Scheduling
+- Kornia-based Data Augmentation during training
+- Robust Loss Functions (Huber, Smooth L1)
+- Comparison experiments between regularized and baseline models
 """
 
 import torch
@@ -8,11 +13,13 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import kornia.augmentation as K
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 import logging
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
+from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
+from src.training.losses import EnhancementLoss, CornerLoss
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,174 +28,130 @@ class DropoutScheduler:
     Dynamically adjusts dropout rates during training.
     
     Strategies:
-    - 'linear': Linearly increase/decrease dropout
-    - 'cosine': Cosine annealing of dropout rate
-    - 'step': Step-wise changes at specific epochs
+    - Linear increase: Gradually increase dropout to prevent overfitting
+    - Cosine annealing: Smooth dropout variation
+    - Step function: Discrete changes at specific epochs
     """
     
     def __init__(
         self,
         model: nn.Module,
-        initial_dropout: float = 0.1,
-        final_dropout: float = 0.5,
         strategy: str = 'linear',
+        initial_dropout: float = 0.0,
+        final_dropout: float = 0.5,
         warmup_epochs: int = 5,
         total_epochs: int = 100
     ):
         self.model = model
+        self.strategy = strategy
         self.initial_dropout = initial_dropout
         self.final_dropout = final_dropout
-        self.strategy = strategy
         self.warmup_epochs = warmup_epochs
         self.total_epochs = total_epochs
-        self.current_epoch = 0
         
-        # Set initial dropout
-        self._set_dropout_rate(initial_dropout)
+        # Find all dropout layers in the model
+        self.dropout_layers = self._find_dropout_layers()
+        logger.info(f"Found {len(self.dropout_layers)} dropout layers")
     
-    def _set_dropout_rate(self, rate: float):
-        """Apply dropout rate to all Dropout layers in the model."""
+    def _find_dropout_layers(self) -> List[nn.Dropout]:
+        """Find all Dropout layers in the model."""
+        dropout_layers = []
         for module in self.model.modules():
             if isinstance(module, nn.Dropout):
-                module.p = rate
+                dropout_layers.append(module)
+        return dropout_layers
     
-    def step(self, epoch: int):
-        """Update dropout rate based on current epoch."""
-        self.current_epoch = epoch
-        
-        if self.strategy == 'linear':
-            if epoch < self.warmup_epochs:
-                # Warmup: gradually increase from 0 to initial_dropout
-                rate = (epoch / self.warmup_epochs) * self.initial_dropout
-            else:
-                # Linear increase to final_dropout
-                progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
-                progress = min(1.0, max(0.0, progress))
-                rate = self.initial_dropout + progress * (self.final_dropout - self.initial_dropout)
-        
-        elif self.strategy == 'cosine':
-            import math
-            if epoch < self.warmup_epochs:
-                rate = (epoch / self.warmup_epochs) * self.initial_dropout
-            else:
-                progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
-                progress = min(1.0, max(0.0, progress))
-                rate = self.final_dropout - 0.5 * (self.final_dropout - self.initial_dropout) * \
-                       (1 + math.cos(math.pi * progress))
-        
-        elif self.strategy == 'step':
-            if epoch < self.warmup_epochs:
-                rate = (epoch / self.warmup_epochs) * self.initial_dropout
-            elif epoch < self.total_epochs * 0.5:
-                rate = self.initial_dropout
-            elif epoch < self.total_epochs * 0.75:
-                rate = (self.initial_dropout + self.final_dropout) / 2
-            else:
-                rate = self.final_dropout
+    def step(self, epoch: int) -> None:
+        """Update dropout rates based on current epoch."""
+        if epoch < self.warmup_epochs:
+            # During warmup, keep dropout at initial value
+            current_dropout = self.initial_dropout
         else:
-            raise ValueError(f"Unknown strategy: {self.strategy}")
+            # Calculate progress through training (after warmup)
+            progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
+            progress = min(1.0, max(0.0, progress))
+            
+            if self.strategy == 'linear':
+                current_dropout = self.initial_dropout + progress * (self.final_dropout - self.initial_dropout)
+            elif self.strategy == 'cosine':
+                import math
+                current_dropout = self.initial_dropout + (self.final_dropout - self.initial_dropout) * (1 - math.cos(progress * math.pi)) / 2
+            elif self.strategy == 'step':
+                # Increase dropout every 25% of training
+                if progress < 0.25:
+                    current_dropout = self.initial_dropout
+                elif progress < 0.5:
+                    current_dropout = self.initial_dropout + 0.3 * (self.final_dropout - self.initial_dropout)
+                elif progress < 0.75:
+                    current_dropout = self.initial_dropout + 0.6 * (self.final_dropout - self.initial_dropout)
+                else:
+                    current_dropout = self.final_dropout
+            else:
+                current_dropout = self.initial_dropout
         
-        self._set_dropout_rate(rate)
-        logger.info(f"Epoch {epoch}: Dropout rate set to {rate:.4f}")
-        return rate
+        # Apply new dropout rate to all layers
+        for dropout_layer in self.dropout_layers:
+            dropout_layer.p = current_dropout
+        
+        if epoch >= self.warmup_epochs:
+            logger.info(f"Epoch {epoch}: Dropout rate set to {current_dropout:.4f} ({self.strategy} strategy)")
+    
+    def set_dropout_for_eval(self) -> None:
+        """Set dropout to 0 for evaluation/inference."""
+        for dropout_layer in self.dropout_layers:
+            dropout_layer.p = 0.0
 
 
 class DataAugmentationTrainer:
     """
     Trainer with Kornia-based on-the-fly data augmentation for regularization.
     
-    Applies geometric and photometric perturbations during training
-    to improve model robustness and generalization.
+    Applies geometric and photometric perturbations during training to improve
+    model robustness to real-world variations.
     """
     
     def __init__(
         self,
         model: nn.Module,
         device: torch.device,
-        loss_fn: nn.Module,
-        optimizer: optim.Optimizer,
-        augment_config: Optional[Dict] = None
+        use_kornia_aug: bool = True,
+        aug_probability: float = 0.5
     ):
-        self.model = model.to(device)
+        self.model = model
         self.device = device
-        self.loss_fn = loss_fn
-        self.optimizer = optimizer
+        self.use_kornia_aug = use_kornia_aug
         
-        # Configure Kornia augmentations
-        self.augment_config = augment_config or self._default_config()
-        self.train_augments = self._build_augmentations()
+        # Define Kornia augmentations
+        if use_kornia_aug:
+            self.augmentations = K.AugmentationSequential(
+                K.RandomRotation(degrees=15, p=aug_probability),
+                K.RandomPerspective(p=aug_probability),
+                K.RandomAffine(degrees=0, translate=0.1, scale=(0.9, 1.1), p=aug_probability),
+                K.RandomGaussianNoise(mean=0.0, std=0.05, p=aug_probability),
+                K.RandomBrightness(brightness=0.2, p=aug_probability),
+                K.RandomContrast(contrast=0.2, p=aug_probability),
+                same_on_batch=False,
+                random_apply=True
+            ).to(device)
+            logger.info("Kornia augmentations initialized")
+        else:
+            self.augmentations = None
     
-    def _default_config(self) -> Dict:
-        """Default augmentation configuration."""
-        return {
-            'rotation': {'degrees': 15},
-            'translation': {'translate': (0.1, 0.1)},
-            'scale': {'scale': (0.9, 1.1)},
-            'shear': {'degrees': 10},
-            'brightness': {'brightness': 0.2},
-            'contrast': {'contrast': 0.2},
-            'hue': {'hue': 0.05},
-            'gaussian_noise': {'std': 0.1},
-            'random_erasing': {'p': 0.1, 'scale': (0.02, 0.33)},
-        }
-    
-    def _build_augmentations(self) -> nn.ModuleList:
-        """Build Kornia augmentation pipeline."""
-        aug_list = nn.ModuleList()
-        
-        # Geometric augmentations
-        if 'rotation' in self.augment_config:
-            aug_list.append(K.RandomRotation(**self.augment_config['rotation']))
-        
-        if 'translation' in self.augment_config:
-            aug_list.append(K.RandomTranslation(**self.augment_config['translation']))
-        
-        if 'scale' in self.augment_config:
-            aug_list.append(K.RandomResizedSize(
-                size=(512, 512),
-                scale=self.augment_config['scale']['scale']
-            ))
-        
-        if 'shear' in self.augment_config:
-            aug_list.append(K.RandomShear(**self.augment_config['shear']))
-        
-        # Photometric augmentations
-        if 'brightness' in self.augment_config:
-            aug_list.append(K.RandomBrightness(**self.augment_config['brightness']))
-        
-        if 'contrast' in self.augment_config:
-            aug_list.append(K.RandomContrast(**self.augment_config['contrast']))
-        
-        if 'hue' in self.augment_config:
-            aug_list.append(K.RandomHue(**self.augment_config['hue']))
-        
-        # Noise augmentations
-        if 'gaussian_noise' in self.augment_config:
-            aug_list.append(K.RandomGaussianNoise(**self.augment_config['gaussian_noise']))
-        
-        if 'random_erasing' in self.augment_config:
-            aug_list.append(K.RandomErasing(**self.augment_config['random_erasing']))
-        
-        logger.info(f"Built augmentation pipeline with {len(aug_list)} transforms")
-        return aug_list
+    def apply_augmentation(self, images: torch.Tensor) -> torch.Tensor:
+        """Apply augmentations to input images."""
+        if self.use_kornia_aug and self.augmentations is not None:
+            return self.augmentations(images)
+        return images
     
     def train_epoch(
         self,
         dataloader: DataLoader,
+        optimizer: optim.Optimizer,
+        criterion: nn.Module,
         epoch: int,
-        apply_augmentation: bool = True
+        use_augmentation: bool = True
     ) -> Dict[str, float]:
-        """
-        Train for one epoch with optional data augmentation.
-        
-        Args:
-            dataloader: Training data loader
-            epoch: Current epoch number
-            apply_augmentation: Whether to apply Kornia augmentations
-        
-        Returns:
-            Dictionary with training metrics
-        """
+        """Train for one epoch with optional augmentation."""
         self.model.train()
         total_loss = 0.0
         num_batches = 0
@@ -197,21 +160,15 @@ class DataAugmentationTrainer:
             images = images.to(self.device)
             targets = targets.to(self.device)
             
-            # Apply augmentations
-            if apply_augmentation:
-                for augment in self.train_augments:
-                    images = augment(images)
+            # Apply augmentation if enabled
+            if use_augmentation:
+                images = self.apply_augmentation(images)
             
-            # Forward pass
-            self.optimizer.zero_grad()
+            optimizer.zero_grad()
             outputs = self.model(images)
-            
-            # Compute loss
-            loss = self.loss_fn(outputs, targets)
-            
-            # Backward pass
+            loss = criterion(outputs, targets)
             loss.backward()
-            self.optimizer.step()
+            optimizer.step()
             
             total_loss += loss.item()
             num_batches += 1
@@ -219,235 +176,250 @@ class DataAugmentationTrainer:
             if batch_idx % 50 == 0:
                 logger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {loss.item():.6f}")
         
-        avg_loss = total_loss / max(num_batches, 1)
-        logger.info(f"Epoch {epoch} completed. Average Loss: {avg_loss:.6f}")
+        avg_loss = total_loss / num_batches
+        logger.info(f"Epoch {epoch} completed - Average Loss: {avg_loss:.6f}")
         
         return {'loss': avg_loss}
 
 
-def create_robust_loss(loss_type: str = 'huber', **kwargs) -> nn.Module:
+def create_robust_criterion(
+    task_type: str = 'enhancement',
+    loss_type: str = 'huber',
+    **kwargs
+) -> nn.Module:
     """
-    Create robust loss functions for training.
+    Create robust loss functions for better generalization.
     
     Args:
-        loss_type: Type of loss ('huber', 'smooth_l1', 'l1', 'mse')
-        **kwargs: Additional arguments for the loss function
+        task_type: 'enhancement' or 'corner_detection'
+        loss_type: 'huber', 'smooth_l1', or 'l1'
+        **kwargs: Additional arguments for loss initialization
     
     Returns:
-        Loss function module
+        Configured loss function
     """
-    if loss_type == 'huber':
-        delta = kwargs.get('delta', 1.0)
-        logger.info(f"Using Huber Loss with delta={delta}")
-        return nn.HuberLoss(delta=delta, reduction='mean')
+    if task_type == 'enhancement':
+        if loss_type == 'huber':
+            return nn.HuberLoss(reduction='mean', delta=kwargs.get('delta', 1.0))
+        elif loss_type == 'smooth_l1':
+            return nn.SmoothL1Loss(reduction='mean')
+        else:
+            return EnhancementLoss(
+                edge_weight=kwargs.get('edge_weight', 0.1),
+                use_sobel=kwargs.get('use_sobel', True)
+            )
     
-    elif loss_type == 'smooth_l1':
-        beta = kwargs.get('beta', 1.0)
-        logger.info(f"Using Smooth L1 Loss with beta={beta}")
-        return nn.SmoothL1Loss(beta=beta, reduction='mean')
-    
-    elif loss_type == 'l1':
-        logger.info("Using L1 Loss")
-        return nn.L1Loss(reduction='mean')
-    
-    elif loss_type == 'mse':
-        logger.info("Using MSE Loss")
-        return nn.MSELoss(reduction='mean')
+    elif task_type == 'corner_detection':
+        if loss_type == 'huber':
+            return nn.HuberLoss(reduction='mean', delta=kwargs.get('delta', 0.5))
+        elif loss_type == 'smooth_l1':
+            return nn.SmoothL1Loss(reduction='mean')
+        else:
+            return CornerLoss(
+                heatmap_weight=kwargs.get('heatmap_weight', 0.5),
+                coordinate_weight=kwargs.get('coordinate_weight', 0.5)
+            )
     
     else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
+        raise ValueError(f"Unknown task type: {task_type}")
 
 
-class RegularizedTrainingPipeline:
+class RegularizationExperiment:
     """
-    Complete training pipeline with multiple regularization strategies.
-    
-    Combines:
-    - Dropout scheduling
-    - Kornia data augmentation
-    - Robust loss functions
-    - Learning rate scheduling
+    Run experiments comparing regularized vs baseline training.
     """
     
     def __init__(
         self,
-        model: nn.Module,
+        model_class: type,
+        model_config: Dict,
         device: torch.device,
-        config: Dict
+        results_dir: Path
     ):
-        self.model = model
+        self.model_class = model_class
+        self.model_config = model_config
         self.device = device
-        self.config = config
-        
-        # Initialize components
-        self.loss_fn = create_robust_loss(
-            config.get('loss_type', 'huber'),
-            **config.get('loss_kwargs', {})
-        )
-        
-        self.optimizer = optim.AdamW(
-            model.parameters(),
-            lr=config.get('lr', 1e-3),
-            weight_decay=config.get('weight_decay', 1e-4)
-        )
-        
-        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=config.get('epochs', 100),
-            eta_min=config.get('min_lr', 1e-6)
-        )
-        
-        # Initialize dropout scheduler
-        self.dropout_scheduler = DropoutScheduler(
-            model=model,
-            initial_dropout=config.get('initial_dropout', 0.1),
-            final_dropout=config.get('final_dropout', 0.5),
-            strategy=config.get('dropout_strategy', 'cosine'),
-            warmup_epochs=config.get('warmup_epochs', 5),
-            total_epochs=config.get('epochs', 100)
-        )
-        
-        # Initialize augmentation trainer
-        self.aug_trainer = DataAugmentationTrainer(
-            model=model,
-            device=device,
-            loss_fn=self.loss_fn,
-            optimizer=self.optimizer,
-            augment_config=config.get('augment_config')
-        )
+        self.results_dir = results_dir
+        self.results_dir.mkdir(parents=True, exist_ok=True)
     
-    def train(
+    def run_comparison(
         self,
         train_loader: DataLoader,
-        val_loader: Optional[DataLoader] = None,
-        save_path: Optional[str] = None
-    ) -> Dict[str, list]:
+        val_loader: DataLoader,
+        epochs: int = 100,
+        learning_rate: float = 1e-3
+    ) -> Dict[str, List[float]]:
         """
-        Full training loop with regularization.
-        
-        Args:
-            train_loader: Training data loader
-            val_loader: Validation data loader (optional)
-            save_path: Path to save best model
+        Train baseline and regularized models, compare performance.
         
         Returns:
-            Training history dictionary
+            Dictionary with training histories
         """
-        epochs = self.config.get('epochs', 100)
-        history = {'train_loss': [], 'val_loss': [], 'dropout_rates': []}
-        best_val_loss = float('inf')
+        results = {}
         
-        logger.info(f"Starting regularized training for {epochs} epochs")
-        logger.info(f"Device: {self.device}")
-        logger.info(f"Loss: {self.config.get('loss_type', 'huber')}")
+        # Train baseline model (no regularization)
+        logger.info("=" * 60)
+        logger.info("Training BASELINE model (no regularization)")
+        logger.info("=" * 60)
+        
+        baseline_model = self.model_class(**self.model_config).to(self.device)
+        baseline_results = self._train_model(
+            baseline_model, train_loader, val_loader, epochs, learning_rate,
+            use_regularization=False
+        )
+        results['baseline'] = baseline_results
+        
+        # Save baseline checkpoint
+        torch.save(
+            baseline_model.state_dict(),
+            self.results_dir / 'baseline_checkpoint.pth'
+        )
+        
+        # Train regularized model
+        logger.info("=" * 60)
+        logger.info("Training REGULARIZED model")
+        logger.info("=" * 60)
+        
+        reg_model = self.model_class(**self.model_config).to(self.device)
+        reg_results = self._train_model(
+            reg_model, train_loader, val_loader, epochs, learning_rate,
+            use_regularization=True
+        )
+        results['regularized'] = reg_results
+        
+        # Save regularized checkpoint
+        torch.save(
+            reg_model.state_dict(),
+            self.results_dir / 'regularized_checkpoint.pth'
+        )
+        
+        return results
+    
+    def _train_model(
+        self,
+        model: nn.Module,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        epochs: int,
+        learning_rate: float,
+        use_regularization: bool
+    ) -> Dict[str, List[float]]:
+        """Internal training loop with optional regularization."""
+        
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        
+        # Initialize regularization components
+        dropout_scheduler = None
+        aug_trainer = None
+        criterion = None
+        
+        if use_regularization:
+            # Dropout scheduling
+            dropout_scheduler = DropoutScheduler(
+                model,
+                strategy='cosine',
+                initial_dropout=0.0,
+                final_dropout=0.3,
+                warmup_epochs=10,
+                total_epochs=epochs
+            )
+            
+            # Kornia augmentation trainer
+            aug_trainer = DataAugmentationTrainer(
+                model, self.device, use_kornia_aug=True, aug_probability=0.7
+            )
+            
+            # Robust loss function
+            if 'UNet' in self.model_class.__name__:
+                criterion = create_robust_criterion('enhancement', 'huber', delta=1.0)
+            else:
+                criterion = create_robust_criterion('corner_detection', 'huber', delta=0.5)
+        else:
+            # Baseline: simple L1 loss
+            if 'UNet' in self.model_class.__name__:
+                criterion = nn.L1Loss()
+            else:
+                criterion = nn.L1Loss()
+        
+        train_losses = []
+        val_losses = []
         
         for epoch in range(epochs):
-            # Update dropout rate
-            dropout_rate = self.dropout_scheduler.step(epoch)
-            history['dropout_rates'].append(dropout_rate)
+            # Update dropout schedule if using regularization
+            if dropout_scheduler is not None:
+                dropout_scheduler.step(epoch)
             
-            # Train with augmentation
-            train_metrics = self.aug_trainer.train_epoch(
-                train_loader, epoch, apply_augmentation=True
-            )
-            history['train_loss'].append(train_metrics['loss'])
+            # Training phase
+            if aug_trainer is not None:
+                train_metrics = aug_trainer.train_epoch(
+                    train_loader, optimizer, criterion, epoch, use_augmentation=True
+                )
+            else:
+                # Simple training loop for baseline
+                model.train()
+                total_loss = 0.0
+                for images, targets in train_loader:
+                    images, targets = images.to(self.device), targets.to(self.device)
+                    optimizer.zero_grad()
+                    outputs = model(images)
+                    loss = criterion(outputs, targets)
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+                train_metrics = {'loss': total_loss / len(train_loader)}
             
-            # Validate
-            if val_loader is not None:
-                val_loss = self._validate(val_loader)
-                history['val_loss'].append(val_loss)
-                
-                # Save best model
-                if val_loss < best_val_loss and save_path:
-                    best_val_loss = val_loss
-                    self._save_checkpoint(save_path, epoch, val_loss)
-                    logger.info(f"Saved new best model at epoch {epoch} with val_loss={val_loss:.6f}")
+            # Validation phase
+            model.eval()
+            val_loss = 0.0
+            with torch.no_grad():
+                for images, targets in val_loader:
+                    images, targets = images.to(self.device), targets.to(self.device)
+                    outputs = model(images)
+                    loss = criterion(outputs, targets)
+                    val_loss += loss.item()
             
-            # Update learning rate
-            self.scheduler.step()
+            train_losses.append(train_metrics['loss'])
+            val_losses.append(val_loss / len(val_loader))
             
-            # Log progress
+            scheduler.step()
+            
             if (epoch + 1) % 10 == 0:
                 logger.info(
-                    f"Epoch {epoch+1}/{epochs} | "
-                    f"Train Loss: {train_metrics['loss']:.6f} | "
-                    f"Val Loss: {history['val_loss'][-1] if val_loader else 'N/A':.6f} | "
-                    f"Dropout: {dropout_rate:.4f} | "
-                    f"LR: {self.scheduler.get_last_lr()[0]:.6f}"
+                    f"Epoch {epoch+1}/{epochs} - "
+                    f"Train Loss: {train_losses[-1]:.6f}, "
+                    f"Val Loss: {val_losses[-1]:.6f}"
                 )
         
-        logger.info("Training completed!")
-        return history
-    
-    def _validate(self, val_loader: DataLoader) -> float:
-        """Run validation without augmentation."""
-        self.model.eval()
-        total_loss = 0.0
-        num_batches = 0
-        
-        with torch.no_grad():
-            for images, targets in val_loader:
-                images = images.to(self.device)
-                targets = targets.to(self.device)
-                
-                outputs = self.model(images)
-                loss = self.loss_fn(outputs, targets)
-                
-                total_loss += loss.item()
-                num_batches += 1
-        
-        return total_loss / max(num_batches, 1)
-    
-    def _save_checkpoint(self, path: str, epoch: int, val_loss: float):
-        """Save model checkpoint."""
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'val_loss': val_loss,
-            'config': self.config
+        return {
+            'train_losses': train_losses,
+            'val_losses': val_losses
         }
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save(checkpoint, path)
 
 
-# Convenience function for quick setup
-def train_with_regularization(
-    model: nn.Module,
-    train_loader: DataLoader,
-    val_loader: Optional[DataLoader],
-    device: torch.device,
-    config: Optional[Dict] = None,
-    save_path: Optional[str] = None
-) -> Tuple[nn.Module, Dict]:
-    """
-    Quick setup for regularized training.
+if __name__ == '__main__':
+    # Example usage
+    logging.basicConfig(level=logging.INFO)
     
-    Args:
-        model: Model to train
-        train_loader: Training data loader
-        val_loader: Validation data loader
-        device: Training device
-        config: Configuration dictionary
-        save_path: Path to save best model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    Returns:
-        Trained model and training history
-    """
-    if config is None:
-        config = {
-            'epochs': 100,
-            'lr': 1e-3,
-            'weight_decay': 1e-4,
-            'loss_type': 'huber',
-            'initial_dropout': 0.1,
-            'final_dropout': 0.5,
-            'dropout_strategy': 'cosine',
-            'warmup_epochs': 5,
-            'augment_config': None
-        }
+    # Test dropout scheduler
+    model = EnhancementUNet(dropout_rate=0.1)
+    scheduler = DropoutScheduler(
+        model,
+        strategy='cosine',
+        initial_dropout=0.0,
+        final_dropout=0.5,
+        warmup_epochs=5,
+        total_epochs=50
+    )
     
-    pipeline = RegularizedTrainingPipeline(model, device, config)
-    history = pipeline.train(train_loader, val_loader, save_path)
+    print("Testing dropout scheduler...")
+    for epoch in range(0, 50, 10):
+        scheduler.step(epoch)
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Dropout):
+                print(f"  Epoch {epoch}: Dropout = {module.p:.4f}")
+                break
     
-    return model, history
+    print("\nRegularization module ready for Phase 6 experiments!")
