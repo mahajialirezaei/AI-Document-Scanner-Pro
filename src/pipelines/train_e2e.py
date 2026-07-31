@@ -2,13 +2,13 @@
 Phase 6: End-to-End Joint Training Pipeline
 
 This module implements joint fine-tuning of Enhancement U-Net and Corner Detection models
-with multi-task learning strategies for improved document scanning performance.
+using a sequential, differentiable pipeline where corner detector output is used to 
+rectify the image during training, and error flows backward from Enhancement to Corner network.
 
 Features:
-- Joint training with combined loss functions
-- Alternating optimization strategy
-- Shared backbone architecture support
-- Gradient balancing between tasks
+- Sequential forward pass: corner detection -> perspective transform -> enhancement
+- Differentiable warping using kornia
+- Fine-tuning with enhancement loss only (backpropagated through entire chain)
 """
 
 import torch
@@ -19,21 +19,31 @@ from typing import Dict, List, Optional, Tuple
 import logging
 from pathlib import Path
 
+try:
+    import kornia
+    from kornia.geometry.transform import get_perspective_transform, warp_perspective
+    KORNIA_AVAILABLE = True
+except ImportError:
+    KORNIA_AVAILABLE = False
+    print("Warning: kornia not installed. Install with: pip install kornia")
+
 from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
-from src.training.losses import EnhancementLoss, CornerLoss
+from src.training.losses import EnhancementLoss
 
 logger = logging.getLogger(__name__)
 
 
-class JointTrainer:
+class SequentialE2ETrainer:
     """
-    Orchestrates simultaneous training of Enhancement and Corner Detection models.
+    Trains corner detector and enhancement network in a sequential differentiable chain.
     
-    Supports:
-    - Multi-task loss combination
-    - Alternating batch updates
-    - Shared backbone architectures
-    - Gradient normalization
+    Forward pass:
+    1. Raw image -> Corner Detector -> predicted corners
+    2. Predicted corners + target flat corners -> Homography
+    3. Raw image + Homography -> warp_perspective -> rectified crop
+    4. Rectified crop -> Enhancement Network -> enhanced output
+    5. Enhanced output vs clean target -> loss
+    6. Backpropagate through entire chain to update both networks
     """
     
     def __init__(
@@ -41,207 +51,113 @@ class JointTrainer:
         enhancement_model: EnhancementUNet,
         corner_model: nn.Module,
         device: torch.device,
-        enhancement_weight: float = 0.5,
-        corner_weight: float = 0.5,
-        use_shared_backbone: bool = False,
-        gradient_balancing: str = 'none'  # 'none', 'norm', 'uncertainty'
+        image_size: Tuple[int, int] = (256, 256),
+        lr: float = 1e-4
     ):
+        if not KORNIA_AVAILABLE:
+            raise ImportError("kornia is required for SequentialE2ETrainer. Install with: pip install kornia")
+        
         self.enhancement_model = enhancement_model.to(device)
         self.corner_model = corner_model.to(device)
         self.device = device
-        self.enhancement_weight = enhancement_weight
-        self.corner_weight = corner_weight
-        self.use_shared_backbone = use_shared_backbone
-        self.gradient_balancing = gradient_balancing
+        self.image_size = image_size
         
-        # Initialize loss functions
-        self.enhancement_criterion = EnhancementLoss(edge_weight=0.1, use_sobel=True)
-        self.corner_criterion = CornerLoss(heatmap_weight=0.5, coordinate_weight=0.5)
+        # Target flat rectangle corners (normalized to [0, 1])
+        h, w = image_size
+        self.register_buffer('flat_corners', torch.tensor([
+            [[0.0, 0.0], [w - 1, 0.0], [w - 1, h - 1], [0.0, h - 1]]], dtype=torch.float32).to(device))
         
-        # Learnable uncertainty weights (if using uncertainty balancing)
-        if gradient_balancing == 'uncertainty':
-            self.log_var_enhancement = nn.Parameter(torch.zeros(1)).to(device)
-            self.log_var_corner = nn.Parameter(torch.zeros(1)).to(device)
-            logger.info("Using uncertainty-based gradient balancing")
+        # Single enhancement loss for the entire chain
+        self.criterion = EnhancementLoss(l1_weight=1.0, edge_weight=0.1).to(device)
         
-        # Optimizers
-        if use_shared_backbone:
-            # Share early layers between models
-            self._setup_shared_backbone()
-            self.optimizer = optim.Adam(
-                list(self.enhancement_model.parameters()) + 
-                list(self.corner_model.parameters()),
-                lr=1e-3
-            )
-        else:
-            self.optimizer_enhancement = optim.Adam(
-                self.enhancement_model.parameters(), lr=1e-3
-            )
-            self.optimizer_corner = optim.Adam(
-                self.corner_model.parameters(), lr=1e-3
-            )
+        # Single optimizer for both models
+        self.optimizer = optim.Adam(
+            list(self.enhancement_model.parameters()) + list(self.corner_model.parameters()),
+            lr=lr
+        )
         
-        logger.info(f"JointTrainer initialized - Enhancement weight: {enhancement_weight}, "
-                   f"Corner weight: {corner_weight}")
+        logger.info(f"SequentialE2ETrainer initialized - Image size: {image_size}, LR: {lr}")
     
-    def _setup_shared_backbone(self) -> None:
+    def _corners_to_homography(self, pred_corners: torch.Tensor) -> torch.Tensor:
         """
-        Configure models to share early convolutional layers.
+        Convert predicted corners to homography matrix.
         
-        This creates a common feature extractor used by both tasks.
-        """
-        # Share the first 3 encoder blocks
-        shared_layers = []
-        for name, param in self.enhancement_model.named_parameters():
-            if 'encoder' in name and ('block1' in name or 'block2' in name or 'block3' in name):
-                shared_layers.append(name)
-        
-        logger.info(f"Sharing {len(shared_layers)} layers between models")
-        
-        # Copy weights from enhancement model to corner model
-        for name, param in self.enhancement_model.named_parameters():
-            if name in shared_layers:
-                corner_param_name = name.replace('enhancement', 'corner')
-                if hasattr(self.corner_model, 'encoder'):
-                    try:
-                        getattr(self.corner_model.encoder, name.split('.')[-1]).weight.data.copy_(param.data)
-                    except (AttributeError, KeyError):
-                        pass
-    
-    def compute_combined_loss(
-        self,
-        enhancement_output: torch.Tensor,
-        enhancement_target: torch.Tensor,
-        corner_output: torch.Tensor,
-        corner_target: torch.Tensor
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute combined multi-task loss.
+        Args:
+            pred_corners: (B, 8) or (B, 4, 2) tensor of predicted corner coordinates
+                         (assumed normalized to [0, 1])
         
         Returns:
-            Total loss and individual loss components
+            H: (B, 3, 3) homography matrices
         """
-        # Individual losses
-        loss_enhancement = self.enhancement_criterion(enhancement_output, enhancement_target)
-        loss_corner = self.corner_criterion(corner_output, corner_target)
+        B = pred_corners.shape[0]
         
-        # Apply gradient balancing
-        if self.gradient_balancing == 'uncertainty':
-            # Uncertainty weighting (Kendall et al., 2018)
-            prec_enhancement = torch.exp(-self.log_var_enhancement)
-            prec_corner = torch.exp(-self.log_var_corner)
-            
-            loss_total = (
-                prec_enhancement * loss_enhancement / 2 + self.log_var_enhancement / 2 +
-                prec_corner * loss_corner / 2 + self.log_var_corner / 2
-            )
-        elif self.gradient_balancing == 'norm':
-            # Gradient normalization
-            grad_norm_enh = torch.sqrt(sum(p.grad.data.norm(2)**2 for p in self.enhancement_model.parameters() if p.grad is not None))
-            grad_norm_corner = torch.sqrt(sum(p.grad.data.norm(2)**2 for p in self.corner_model.parameters() if p.grad is not None))
-            
-            # Normalize weights inversely proportional to gradient norms
-            total_norm = grad_norm_enh + grad_norm_corner + 1e-8
-            norm_enh = grad_norm_enh / total_norm
-            norm_corner = grad_norm_corner / total_norm
-            
-            loss_total = norm_enh * loss_enhancement + norm_corner * loss_corner
-        else:
-            # Fixed weighting
-            loss_total = self.enhancement_weight * loss_enhancement + self.corner_weight * loss_corner
+        # Reshape to (B, 4, 2) if needed
+        if pred_corners.dim() == 2:
+            pred_corners = pred_corners.view(B, 4, 2)
         
-        loss_dict = {
-            'total': loss_total.item(),
-            'enhancement': loss_enhancement.item(),
-            'corner': loss_corner.item()
-        }
+        # Denormalize from [0, 1] to pixel coordinates
+        h, w = self.image_size
+        pred_corners_denorm = pred_corners.clone()
+        pred_corners_denorm[:, :, 0] *= (w - 1)
+        pred_corners_denorm[:, :, 1] *= (h - 1)
         
-        return loss_total, loss_dict
+        # Expand flat_corners to batch size
+        flat_corners_batch = self.flat_corners.expand(B, -1, -1)
+        
+        # Compute homography from predicted corners to flat rectangle
+        H = get_perspective_transform(pred_corners_denorm, flat_corners_batch)
+        
+        return H
     
     def train_step_joint(
         self,
         images: torch.Tensor,
-        enhancement_targets: torch.Tensor,
-        corner_targets: torch.Tensor
+        enhancement_targets: torch.Tensor
     ) -> Dict[str, float]:
         """
-        Perform one joint training step updating both models simultaneously.
+        Perform one joint training step with sequential forward pass.
+        
+        Args:
+            images: Raw document photos (B, C, H, W)
+            enhancement_targets: Clean target images (B, C, H, W)
+        
+        Returns:
+            Loss dictionary
         """
         self.enhancement_model.train()
         self.corner_model.train()
         
         images = images.to(self.device)
         enhancement_targets = enhancement_targets.to(self.device)
-        corner_targets = corner_targets.to(self.device)
         
-        # Forward pass through both models
-        enhancement_output = self.enhancement_model(images)
+        # Step 1: Predict corners from raw image
         corner_output = self.corner_model(images)
         
-        # Compute combined loss
-        loss_total, loss_dict = self.compute_combined_loss(
-            enhancement_output, enhancement_targets,
-            corner_output, corner_targets
-        )
-        
-        # Backward pass
-        if self.use_shared_backbone:
-            self.optimizer.zero_grad()
-            loss_total.backward()
-            self.optimizer.step()
+        # Handle both regression (B, 8) and heatmap (tuple) outputs
+        if isinstance(corner_output, tuple):
+            pred_corners, _ = corner_output
         else:
-            # Separate backward passes
-            self.optimizer_enhancement.zero_grad()
-            (loss_dict['enhancement'] * self.enhancement_weight).backward(retain_graph=True)
-            self.optimizer_enhancement.step()
-            
-            self.optimizer_corner.zero_grad()
-            (loss_dict['corner'] * self.corner_weight).backward()
-            self.optimizer_corner.step()
+            pred_corners = corner_output
         
-        return loss_dict
-    
-    def train_step_alternating(
-        self,
-        images: torch.Tensor,
-        enhancement_targets: torch.Tensor,
-        corner_targets: torch.Tensor,
-        task: str = 'enhancement'
-    ) -> Dict[str, float]:
-        """
-        Perform alternating training step (update one task at a time).
+        # Step 2: Compute homography from predicted corners to flat rectangle
+        H = self._corners_to_homography(pred_corners)
         
-        Args:
-            task: 'enhancement' or 'corner' - which task to update
-        """
-        if task == 'enhancement':
-            self.enhancement_model.train()
-            images = images.to(self.device)
-            enhancement_targets = enhancement_targets.to(self.device)
-            
-            self.optimizer_enhancement.zero_grad()
-            output = self.enhancement_model(images)
-            loss = self.enhancement_criterion(output, enhancement_targets)
-            loss.backward()
-            self.optimizer_enhancement.step()
-            
-            return {'enhancement': loss.item()}
+        # Step 3: Warp raw image using predicted homography (differentiable)
+        h, w = self.image_size
+        rectified_crop = warp_perspective(images, H, (h, w))
         
-        elif task == 'corner':
-            self.corner_model.train()
-            images = images.to(self.device)
-            corner_targets = corner_targets.to(self.device)
-            
-            self.optimizer_corner.zero_grad()
-            output = self.corner_model(images)
-            loss = self.corner_criterion(output, corner_targets)
-            loss.backward()
-            self.optimizer_corner.step()
-            
-            return {'corner': loss.item()}
+        # Step 4: Pass rectified crop through enhancement network
+        enhanced_output = self.enhancement_model(rectified_crop)
         
-        else:
-            raise ValueError(f"Unknown task: {task}")
+        # Step 5: Compute enhancement loss (compare enhanced output to clean target)
+        loss = self.criterion(enhanced_output, enhancement_targets)
+        
+        # Step 6: Backpropagate through entire chain
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+        
+        return {'total_loss': loss.item(), 'enhancement_loss': loss.item()}
 
 
 def train_e2e_pipeline(
@@ -250,92 +166,64 @@ def train_e2e_pipeline(
     corner_model: nn.Module,
     device: torch.device,
     epochs: int = 50,
-    strategy: str = 'joint',  # 'joint' or 'alternating'
-    enhancement_weight: float = 0.5,
-    corner_weight: float = 0.5,
+    image_size: Tuple[int, int] = (256, 256),
+    lr: float = 1e-4,
     checkpoint_dir: Optional[Path] = None
 ) -> Dict[str, List[float]]:
     """
-    End-to-end training pipeline for joint model optimization.
+    End-to-end training pipeline with sequential differentiable chain.
     
     Args:
-        dataloader: Combined dataset with both enhancement and corner targets
+        dataloader: Dataset with raw photos and clean targets
         enhancement_model: U-Net for document enhancement
         corner_model: Model for corner detection
         device: CUDA/CPU device
         epochs: Number of training epochs
-        strategy: 'joint' (simultaneous) or 'alternating' (batch-wise switching)
-        enhancement_weight: Weight for enhancement loss
-        corner_weight: Weight for corner detection loss
+        image_size: Target image size for warping
+        lr: Learning rate
         checkpoint_dir: Directory to save checkpoints
     
     Returns:
         Training history dictionary
     """
-    trainer = JointTrainer(
+    trainer = SequentialE2ETrainer(
         enhancement_model,
         corner_model,
         device,
-        enhancement_weight=enhancement_weight,
-        corner_weight=corner_weight,
-        use_shared_backbone=False,
-        gradient_balancing='none'
+        image_size=image_size,
+        lr=lr
     )
     
     history = {
-        'enhancement_loss': [],
-        'corner_loss': [],
-        'total_loss': []
+        'total_loss': [],
+        'enhancement_loss': []
     }
     
     for epoch in range(epochs):
-        epoch_enh_loss = 0.0
-        epoch_corner_loss = 0.0
         epoch_total_loss = 0.0
         num_batches = 0
         
         for batch_idx, batch in enumerate(dataloader):
-            # Assume batch contains: (images, enhancement_targets, corner_targets)
-            if len(batch) == 3:
-                images, enh_targets, corner_targets = batch
-            else:
-                # Fallback for different data formats
-                images = batch[0]
-                enh_targets = batch[1] if len(batch) > 1 else batch[0]
-                corner_targets = batch[2] if len(batch) > 2 else batch[1]
+            # Extract data from batch
+            images = batch['raw_photo'] if isinstance(batch, dict) else batch[0]
+            targets = batch['clean_target'] if isinstance(batch, dict) else batch[1]
             
-            if strategy == 'joint':
-                losses = trainer.train_step_joint(images, enh_targets, corner_targets)
-            elif strategy == 'alternating':
-                # Alternate between tasks each batch
-                task = 'enhancement' if batch_idx % 2 == 0 else 'corner'
-                losses = trainer.train_step_alternating(images, enh_targets, corner_targets, task)
-            else:
-                raise ValueError(f"Unknown strategy: {strategy}")
+            losses = trainer.train_step_joint(images, targets)
             
-            epoch_enh_loss += losses.get('enhancement', 0.0)
-            epoch_corner_loss += losses.get('corner', 0.0)
-            epoch_total_loss += losses.get('total', losses.get('enhancement', 0.0) + losses.get('corner', 0.0))
+            epoch_total_loss += losses.get('total_loss', 0.0)
             num_batches += 1
             
             if batch_idx % 20 == 0:
                 logger.info(f"Epoch {epoch+1}/{epochs}, Batch {batch_idx}: "
-                           f"Enh Loss = {losses.get('enhancement', 0.0):.4f}, "
-                           f"Corner Loss = {losses.get('corner', 0.0):.4f}")
+                           f"Loss = {losses.get('total_loss', 0.0):.4f}")
         
         # Average losses for epoch
-        avg_enh_loss = epoch_enh_loss / num_batches
-        avg_corner_loss = epoch_corner_loss / num_batches
         avg_total_loss = epoch_total_loss / num_batches
         
-        history['enhancement_loss'].append(avg_enh_loss)
-        history['corner_loss'].append(avg_corner_loss)
         history['total_loss'].append(avg_total_loss)
+        history['enhancement_loss'].append(avg_total_loss)
         
-        logger.info(f"Epoch {epoch+1}/{epochs} completed - "
-                   f"Avg Enh Loss: {avg_enh_loss:.4f}, "
-                   f"Avg Corner Loss: {avg_corner_loss:.4f}, "
-                   f"Avg Total Loss: {avg_total_loss:.4f}")
+        logger.info(f"Epoch {epoch+1}/{epochs} completed - Avg Loss: {avg_total_loss:.4f}")
         
         # Save checkpoint every 10 epochs
         if checkpoint_dir and (epoch + 1) % 10 == 0:
@@ -358,34 +246,25 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # Create sample models
-    enhancement_model = EnhancementUNet(dropout_rate=0.1)
-    corner_model = CornerRegressionModel(dropout_rate=0.1)
+    enhancement_model = EnhancementUNet(dropout_rate=0.0)
+    corner_model = CornerRegressionModel(dropout_rate=0.0)
     
-    print("Creating JointTrainer...")
-    trainer = JointTrainer(
+    print("Creating SequentialE2ETrainer...")
+    trainer = SequentialE2ETrainer(
         enhancement_model,
         corner_model,
         device,
-        enhancement_weight=0.5,
-        corner_weight=0.5
+        image_size=(256, 256),
+        lr=1e-4
     )
     
     # Test with dummy data
     batch_size = 2
     images = torch.randn(batch_size, 3, 256, 256).to(device)
-    enh_targets = torch.randn(batch_size, 3, 256, 256).to(device)
-    corner_targets = torch.randn(batch_size, 4, 2).to(device)  # 4 corners, (x, y)
+    targets = torch.randn(batch_size, 3, 256, 256).to(device)
     
-    print("\nTesting joint training step...")
-    losses = trainer.train_step_joint(images, enh_targets, corner_targets)
+    print("\nTesting sequential joint training step...")
+    losses = trainer.train_step_joint(images, targets)
     print(f"Losses: {losses}")
     
-    print("\nTesting alternating training step (enhancement)...")
-    losses = trainer.train_step_alternating(images, enh_targets, corner_targets, 'enhancement')
-    print(f"Losses: {losses}")
-    
-    print("\nTesting alternating training step (corner)...")
-    losses = trainer.train_step_alternating(images, enh_targets, corner_targets, 'corner')
-    print(f"Losses: {losses}")
-    
-    print("\n✅ End-to-End pipeline ready for Phase 6!")
+    print("\n✅ End-to-End sequential pipeline ready!")
