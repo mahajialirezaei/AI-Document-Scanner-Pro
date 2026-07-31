@@ -316,3 +316,80 @@ def create_trainer(trainer_type, model, train_loader, val_loader, device, **kwar
         raise ValueError(f"Unknown trainer type: {trainer_type}. Available: {list(trainers.keys())}")
     
     return trainers[trainer_type](model, train_loader, val_loader, device, **kwargs)
+
+
+
+
+if __name__ == '__main__':
+    import argparse
+    import sys
+    from torch.utils.data import DataLoader
+    
+    from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
+    from src.data.data_splitter import get_synthetic_splits
+
+    parser = argparse.ArgumentParser(description="Train Document Scanning Models (Phases 3 & 4)")
+    parser.add_argument("--task", type=str, required=True, 
+                        choices=["enhancement", "corner_regression", "corner_heatmap"],
+                        help="Which task to train")
+    
+    parser.add_argument("--data-dir", type=str, default="data/raw", help="Unused in training (kept for README compatibility)")
+    parser.add_argument("--annotations", type=str, default="data/annotations/_annotations.coco.json", help="Unused in training")
+    
+    parser.add_argument("--clean-scans", type=str, default="data/clean_scans", help="Path to clean scans")
+    parser.add_argument("--backgrounds", type=str, default="data/random_backgrounds", help="Path to random backgrounds")
+    
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--save-dir", type=str, required=True, help="Directory to save checkpoints")
+    parser.add_argument("--image-size", type=int, default=256)
+    parser.add_argument("--seed", type=int, default=42)
+
+    args = parser.parse_args()
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+
+    # 1. Prepare Synthetic Data
+    print("Preparing Synthetic Dataset Splits...")
+    try:
+        train_ds, val_ds, test_ds = get_synthetic_splits(
+            clean_scans_dir=args.clean_scans,
+            backgrounds_dir=args.backgrounds,
+            image_size=(args.image_size, args.image_size),
+            seed=args.seed,
+            num_eval_samples=100
+        )
+    except Exception as e:
+        print(f"Error loading datasets: {e}")
+        print("Please ensure 'data/clean_scans' and 'data/random_backgrounds' directories exist and contain images.")
+        sys.exit(1)
+
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
+
+    # 2. Initialize Model
+    print(f"Initializing {args.task} model...")
+    if args.task == "enhancement":
+        model = EnhancementUNet(dropout_rate=0.0)
+    elif args.task == "corner_regression":
+        model = CornerRegressionModel(dropout_rate=0.0)
+    elif args.task == "corner_heatmap":
+        model = CornerHeatmapModel(dropout_rate=0.0)
+    else:
+        raise ValueError("Invalid task")
+
+    # 3. Create Trainer and Train
+    trainer = create_trainer(
+        trainer_type=args.task,
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=device,
+        save_dir=args.save_dir,
+        lr=args.lr,
+        num_epochs=args.epochs
+    )
+
+    trainer.train()
