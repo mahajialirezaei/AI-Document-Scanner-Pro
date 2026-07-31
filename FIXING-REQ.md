@@ -2,6 +2,10 @@
 **Target Audience:** AI Development Agent
 **Objective:** Refactor and fix critical compliance flaws and architectural deviations identified in the codebase. The implementation must strictly adhere to the requirements of the "Document Scanning Enhancement" project.
 
+
+target branch: refactor/synthetic-pipeline-and-e2e
+then merge it to develop
+data_structures are in DATA_STRUCTURE.md
 ---
 
 ## Task 1: Implement True Synthetic Background Compositing
