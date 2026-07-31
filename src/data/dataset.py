@@ -7,10 +7,9 @@ import os
 import json
 import cv2
 import numpy as np
+import torch
 from typing import Dict, List, Tuple, Optional, Any, Callable
 from torch.utils.data import Dataset, DataLoader
-import albumentations as A
-from albumentations.pytorch import ToTensorV2
 
 from .degradation import DegradationPipeline, create_degradation_pipeline
 
@@ -164,8 +163,8 @@ class DocumentScanningDataset(Dataset):
         
         # Apply transforms if provided
         if self.transform is not None:
-            transformed = self.transform(image=image)
-            image = transformed['image']
+            transformed = self.transform(image)
+            image = transformed
         
         # Convert to tensor if not already done by transform
         if not isinstance(image, np.ndarray):
@@ -284,40 +283,90 @@ class DocumentEnhancementDataset(Dataset):
 
 def get_train_transform(image_size: Tuple[int, int] = (512, 512)) -> Callable:
     """
-    Create training data augmentation pipeline.
+    Create training data augmentation pipeline using OpenCV.
     
     Args:
         image_size: Target image size
         
     Returns:
-        Albumentations composition
+        Composed transform function
     """
-    return A.Compose([
-        A.RandomRotate90(p=0.5),
-        A.ShiftScaleRotate(shift_limit=0.1, scale_limit=0.1, rotate_limit=15, p=0.5),
-        A.OneOf([
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2),
-            A.HueSaturationValue(hue_shift_limit=10, sat_shift_limit=20, val_shift_limit=10),
-        ], p=0.5),
-        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ToTensorV2()
-    ])
+    def transform(image: np.ndarray) -> np.ndarray:
+        # RandomRotate90 replacement using cv2.rotate
+        if np.random.rand() < 0.5:
+            k = np.random.choice([0, 1, 2])  # 0: 90°, 1: 180°, 2: 270°
+            image = cv2.rotate(image, {0: cv2.ROTATE_90_COUNTERCLOCKWISE, 
+                                        1: cv2.ROTATE_180, 
+                                        2: cv2.ROTATE_90_CLOCKWISE}[k])
+        
+        # ShiftScaleRotate replacement
+        if np.random.rand() < 0.5:
+            h, w = image.shape[:2]
+            shift_x = int(np.random.uniform(-0.1, 0.1) * w)
+            shift_y = int(np.random.uniform(-0.1, 0.1) * h)
+            scale = np.random.uniform(0.9, 1.1)
+            angle = np.random.uniform(-15, 15)
+            
+            M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, scale)
+            M[0, 2] += shift_x
+            M[1, 2] += shift_y
+            image = cv2.warpAffine(image, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+        
+        # RandomBrightnessContrast replacement
+        if np.random.rand() < 0.5:
+            if np.random.rand() < 0.5:
+                # Brightness/contrast adjustment
+                brightness = np.random.uniform(0.8, 1.2)
+                contrast = np.random.uniform(0.8, 1.2)
+                image = image.astype(np.float32) * brightness * contrast
+                image = np.clip(image, 0, 255).astype(np.uint8)
+            else:
+                # Hue/Saturation adjustment
+                hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+                h_shift = np.random.uniform(-10, 10)
+                s_shift = np.random.uniform(-20, 20)
+                v_shift = np.random.uniform(-10, 10)
+                hsv = hsv.astype(np.float32)
+                hsv[:, :, 0] = np.clip(hsv[:, :, 0] + h_shift, 0, 179)
+                hsv[:, :, 1] = np.clip(hsv[:, :, 1] + s_shift, 0, 255)
+                hsv[:, :, 2] = np.clip(hsv[:, :, 2] + v_shift, 0, 255)
+                image = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+        
+        # Normalize and convert to tensor
+        image = image.astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        image = (image - mean) / std
+        image = np.transpose(image, (2, 0, 1))  # HWC to CHW
+        image = torch.from_numpy(image)
+        
+        return image
+    
+    return transform
 
 
 def get_val_transform(image_size: Tuple[int, int] = (512, 512)) -> Callable:
     """
-    Create validation data transformation pipeline.
+    Create validation data transformation pipeline using OpenCV.
     
     Args:
         image_size: Target image size
         
     Returns:
-        Albumentations composition
+        Composed transform function
     """
-    return A.Compose([
-        A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ToTensorV2()
-    ])
+    def transform(image: np.ndarray) -> np.ndarray:
+        # Normalize and convert to tensor
+        image = image.astype(np.float32) / 255.0
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        image = (image - mean) / std
+        image = np.transpose(image, (2, 0, 1))  # HWC to CHW
+        image = torch.from_numpy(image)
+        
+        return image
+    
+    return transform
 
 
 def create_dataloaders(root_dir: str,

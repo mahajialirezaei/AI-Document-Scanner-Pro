@@ -311,6 +311,31 @@ class DegradationPipeline:
         degraded = cv2.undistort(image, camera_matrix, dist_coeffs)
         return degraded
     
+    def apply_resolution_loss(self, image: np.ndarray, scale_factor: Optional[float] = None) -> np.ndarray:
+        """
+        Apply resolution loss by downscaling and upscaling to simulate camera distance.
+        
+        Args:
+            image: Input image (H, W, C)
+            scale_factor: Scale factor for downscaling (between 2 and 4). Random if None.
+            
+        Returns:
+            Image with resolution loss
+        """
+        h, w = image.shape[:2]
+        
+        if scale_factor is None:
+            scale_factor = random.uniform(2, 4)
+        
+        # Downscale
+        new_h, new_w = int(h / scale_factor), int(w / scale_factor)
+        downscaled = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        # Upscale back to original dimensions
+        upscaled = cv2.resize(downscaled, (w, h), interpolation=cv2.INTER_LINEAR)
+        
+        return upscaled
+    
     def apply_random_degradation(self, image: np.ndarray, 
                                   num_degradations: int = 3) -> np.ndarray:
         """
@@ -332,6 +357,7 @@ class DegradationPipeline:
             lambda x: self.apply_brightness_change(x),
             lambda x: self.apply_contrast_change(x),
             lambda x: self.apply_shadow(x, num_shadows=random.randint(1, 2)),
+            lambda x: self.apply_resolution_loss(x),
         ]
         
         # Select random degradations
