@@ -32,9 +32,9 @@ class EnhancementTrainer:
         self.model.train()
         total_loss = 0.0
         
-        for degraded, clean in self.train_loader:
-            degraded = degraded.to(self.device)
-            clean = clean.to(self.device)
+        for batch in self.train_loader:
+            degraded = batch['rectified_input'].to(self.device)
+            clean = batch['clean_target'].to(self.device)
             
             self.optimizer.zero_grad()
             output = self.model(degraded)
@@ -51,16 +51,16 @@ class EnhancementTrainer:
         self.model.eval()
         total_loss = 0.0
         
-        for degraded, clean in self.val_loader:
-            degraded = degraded.to(self.device)
-            clean = clean.to(self.device)
+        for batch in self.val_loader:
+            degraded = batch['rectified_input'].to(self.device)
+            clean = batch['clean_target'].to(self.device)
             
             output = self.model(degraded)
             loss = self.criterion(output, clean)
             total_loss += loss.item() * degraded.size(0)
         
         return total_loss / len(self.val_loader.dataset)
-    
+
     def train(self):
         print(f"Starting enhancement training for {self.num_epochs} epochs...")
         print(f"Save directory: {self.save_dir}")
@@ -125,8 +125,10 @@ class CornerRegressionTrainer:
         total_loss = 0.0
         
         for batch in self.train_loader:
-            image = batch['image'].to(self.device)
-            corners = batch['corners'].to(self.device)
+            # تغییر کلید استخراج تصویر
+            image = batch['raw_photo'].to(self.device)
+            # شبکه رگرسیون انتظار دارد مختصات به صورت یک تنسور فلت شده (B, 8) باشد
+            corners = batch['corners'].view(batch['corners'].size(0), -1).to(self.device)
             
             self.optimizer.zero_grad()
             pred_corners = self.model(image)
@@ -144,8 +146,8 @@ class CornerRegressionTrainer:
         total_loss = 0.0
         
         for batch in self.val_loader:
-            image = batch['image'].to(self.device)
-            corners = batch['corners'].to(self.device)
+            image = batch['raw_photo'].to(self.device)
+            corners = batch['corners'].view(batch['corners'].size(0), -1).to(self.device)
             
             pred_corners = self.model(image)
             loss = self.criterion(pred_corners, corners)
@@ -212,16 +214,34 @@ class CornerHeatmapTrainer:
         self.best_val_loss = float('inf')
         self.history = {'train_loss': [], 'val_loss': [], 'lr': []}
     
+    def _generate_target_heatmaps(self, corners, image_size, sigma=5.0):
+        B, num_corners, _ = corners.shape
+        H, W = image_size
+        
+        x_c = (corners[..., 0] * (W - 1)).view(B, num_corners, 1, 1)
+        y_c = (corners[..., 1] * (H - 1)).view(B, num_corners, 1, 1)
+        
+        y = torch.arange(H, device=corners.device, dtype=torch.float32).view(1, 1, H, 1)
+        x = torch.arange(W, device=corners.device, dtype=torch.float32).view(1, 1, 1, W)
+        
+        heatmaps = torch.exp(-((x - x_c)**2 + (y - y_c)**2) / (2 * sigma**2))
+        
+        return heatmaps
+
     def train_epoch(self):
         self.model.train()
         total_loss = 0.0
         
         for batch in self.train_loader:
-            image = batch['image'].to(self.device)
-            heatmaps = batch['heatmaps'].to(self.device)
+            image = batch['raw_photo'].to(self.device)
+            corners = batch['corners'].to(self.device)
+            
+            heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
             
             self.optimizer.zero_grad()
-            pred_heatmaps = self.model(image)
+            
+            _, pred_heatmaps = self.model(image)
+            
             loss = self.criterion(pred_heatmaps, heatmaps)
             loss.backward()
             self.optimizer.step()
@@ -229,22 +249,24 @@ class CornerHeatmapTrainer:
             total_loss += loss.item() * image.size(0)
         
         return total_loss / len(self.train_loader.dataset)
-    
+
     @torch.no_grad()
     def validate(self):
         self.model.eval()
         total_loss = 0.0
         
         for batch in self.val_loader:
-            image = batch['image'].to(self.device)
-            heatmaps = batch['heatmaps'].to(self.device)
+            image = batch['raw_photo'].to(self.device)
+            corners = batch['corners'].to(self.device)
             
-            pred_heatmaps = self.model(image)
+            heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
+            
+            _, pred_heatmaps = self.model(image)
+            
             loss = self.criterion(pred_heatmaps, heatmaps)
             total_loss += loss.item() * image.size(0)
         
         return total_loss / len(self.val_loader.dataset)
-    
     def train(self):
         print(f"Starting corner heatmap training for {self.num_epochs} epochs...")
         print(f"Save directory: {self.save_dir}")
