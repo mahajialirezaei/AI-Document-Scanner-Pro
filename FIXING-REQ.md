@@ -1,56 +1,56 @@
-# Project Correction Directives (FIXING.md)
-
-**Objective:** Resolve critical compliance flaws and logic inconsistencies identified during the Phase 7 code review before the final presentation. All fixes must be implemented strictly using OpenCV and PyTorch native functions.
-
-## Git Branching Strategy
-
-Create a single, unified bugfix branch from `develop` to address all compliance issues simultaneously. 
-
-*   **Source Branch:** `develop`
-*   **Target Branch:** `bugfix/compliance-and-metrics`
-*   **Command:** `git checkout -b bugfix/compliance-and-metrics develop`
+# Project Correction Directives (FIXING-REQ.md)
+**Target Audience:** AI Development Agent
+**Objective:** Refactor and fix critical compliance flaws and architectural deviations identified in the codebase. The implementation must strictly adhere to the requirements of the "Document Scanning Enhancement" project.
 
 ---
 
-## Task 1: Eliminate Third-Party Augmentation Libraries
-
-**Target File:** `src/data/dataset.py`
-
-**Description:** The project explicitly forbids third-party libraries for transformations. The current implementation uses `albumentations`, which is a critical rule violation.
-
-**Directives:**
-1. Remove `import albumentations as A` and `from albumentations.pytorch import ToTensorV2`.
-2. Delete the `get_train_transform` and `get_val_transform` functions.
-3. Rewrite the transformation logic inside the `DocumentScanningDataset` or `degradation.py` using strictly `cv2` (OpenCV) functions.
-4. Replace `A.RandomRotate90` with `cv2.rotate`.
-5. Replace `A.RandomBrightnessContrast` with OpenCV matrix scaling operations.
-6. Replace `ToTensorV2()` with standard PyTorch tensor conversions (`torch.from_numpy().permute(2, 0, 1)`).
+## Task 1: Implement True Synthetic Background Compositing
+**Target Files:** `src/data/dataset.py`, `src/data/degradation.py`
+**Context & Rationale:** The project fundamentally relies on "zero-annotation" synthetic data generation. The current implementation mistakenly relies on manual annotations (`_annotations.coco.json`) for training data, which violates the core logic of Section 1.3.
+**Current Flaw:** `DocumentScanningDataset` reads JSON labels. No background compositing is implemented.
+**Actionable Directives:**
+1. **Refactor `SyntheticDocumentDataset`:** Modify the dataset class to accept two directories: `clean_scans` and `random_backgrounds`. Remove the dependency on the JSON annotation file for training.
+2. **Generate Random Points:** For each sample, select a random background image and a clean scan. Generate 4 random, logically placed coordinates on the background image (representing the target corners).
+3. **Compute Homography:** Use `cv2.getPerspectiveTransform` to calculate the transformation matrix from the flat scan's corners to the 4 random background points.
+4. **Warp and Composite:** Use `cv2.warpPerspective` to project the clean scan onto the background. 
+5. **Set Labels:** The 4 random background points generated in Step 2 MUST be returned directly as the ground-truth corner labels (`corners`) for the Corner Detection Network.
 
 ---
 
-## Task 2: Implement Distance Simulation Degradation
-
-**Target File:** `src/data/degradation.py`
-
-**Description:** The mandatory requirement to simulate camera distance (resolution loss) via consecutive downscaling and upscaling is missing from the degradation pipeline.
-
-**Directives:**
-1. Create a new function named `apply_resolution_loss` inside the `DegradationPipeline` class.
-2. The function must accept an `image` and a random scale factor between 2 and 4.
-3. Use `cv2.resize` with `cv2.INTER_LINEAR` or `cv2.INTER_AREA` to downscale the image by the random factor.
-4. Immediately use `cv2.resize` to upscale the image back to its original dimensions.
-5. Add this new function to the list of augmentations in `apply_random_degradation`.
+## Task 2: Implement "Warp-Back" for Enhancement Network Inputs
+**Target Files:** `src/data/dataset.py`, `src/data/degradation.py`
+**Context & Rationale:** The Enhancement Network MUST operate on "rectified crops" (flat images), not raw, angled photos. To compute pixel-wise loss, the degraded input must perfectly align with the clean target.
+**Current Flaw:** `apply_perspective_distortion` is defined but never called in the degradation pipeline. The model is bypassing the perspective alignment challenge.
+**Actionable Directives:**
+1. **Integrate Degradation:** After compositing the image in Task 1, apply the photometric degradations (blur, noise, shadows, etc.) to the composite image.
+2. **Calculate Inverse Homography:** Calculate the inverse transformation matrix (`H_inv`) to map the 4 random background points back to a flat, rectangular shape matching the original clean scan's dimensions.
+3. **Warp-Back (Rectification):** Apply `cv2.warpPerspective` using `H_inv` on the *degraded composite image*.
+4. **Assign Targets:** The result of Step 3 must be returned as `rectified_input` (input for the U-Net), and the original unmodified clean scan must be returned as `clean_target`. 
+5. **Cleanup:** Remove the unused `apply_perspective_distortion` function from `degradation.py`, as perspective is now handled inherently by the compositing and warp-back process.
 
 ---
 
-## Task 3: Resolve Loss Function Inconsistency
+## Task 3: Refactor End-to-End (E2E) Training to a Differentiable Sequential Chain
+**Target Files:** `src/pipelines/train_e2e.py`
+**Context & Rationale:** Section 7 requires a sequential, differentiable pipeline where the output of the corner detector is used to crop the image *during training*, and the error flows backward from the Enhancement network to the Corner network.
+**Current Flaw:** The code implements Multi-Task Learning with a Shared Backbone, feeding the raw image to both networks simultaneously. `kornia` is completely ignored.
+**Actionable Directives:**
+1. **Remove Multi-Task Logic:** Completely remove `SharedBackboneNetwork`, `train_step_alternating`, and the independent loss combinations (Multi-Task Loss).
+2. **Build Sequential Forward Pass:** In `train_step_joint`, implement the following exact chain:
+    * Pass the raw image tensor to the Corner Detector to get predicted corners.
+    * Use `kornia.geometry.transform.get_perspective_transform` to compute the homography from the predicted corners to a flat rectangle.
+    * Use `kornia.geometry.transform.warp_perspective` to extract the rectified crop from the raw image.
+    * Pass this differentiable rectified crop to the Enhancement Network.
+3. **Fine-Tuning:** Calculate the loss ONLY using the Enhancement Loss (comparing the final output to the clean target). Backpropagate this single loss through the entire chain so the Corner Detector learns to predict corners that minimize enhancement artifacts.
 
-**Target File:** `src/training/losses.py`
+---
 
-**Description:** The documentation claims the use of MS-SSIM for the Enhancement Network, but the actual codebase only implements L1 and Sobel Loss. 
-
-**Directives:**
-1. Import the necessary PyTorch functional operations to compute structural similarity, or implement a native SSIM/MS-SSIM function. 
-2. Update the `EnhancementLoss` class initialization to accept an `ssim_weight` parameter.
-3. Integrate the SSIM calculation into the `forward` pass of `EnhancementLoss`.
-4. Ensure the final loss formula correctly balances L1, Sobel (edge), and SSIM components to optimize text legibility.
+## Task 4: Freeze Validation and Test Sets
+**Target Files:** `src/data/dataset.py`, `src/training/train.py`
+**Context & Rationale:** Because synthetic data is generated on-the-fly, the validation and test sets will change every epoch (especially with `num_workers > 0`), destroying the reliability of the validation metrics.
+**Current Flaw:** Randomness is applied dynamically in `__getitem__`. The fixed Seed in `__init__` does not prevent different augmentations across epochs when multi-processing is used.
+**Actionable Directives:**
+1. **Implement Caching Mechanism:** Add a `freeze_data` boolean parameter to the synthetic dataset class.
+2. **Pre-generate Validation/Test Data:** If `freeze_data=True`, the dataset must generate the degraded image, the rectified input, and the corners for all samples exactly *once* (either storing them in RAM inside a list/dict during `__init__`, or saving them to a temporary directory on the disk).
+3. **Deterministic Fetching:** When `__getitem__` is called on a frozen dataset, it must retrieve the exact same pre-generated sample every time, bypassing the random generation functions entirely.
+4. **Instantiate Correctly:** Ensure `train.py` initializes the Validation and Test datasets with `freeze_data=True`, while the Training dataset keeps `freeze_data=False`.
