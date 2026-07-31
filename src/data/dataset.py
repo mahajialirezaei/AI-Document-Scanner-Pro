@@ -73,7 +73,10 @@ class SyntheticDocumentDataset(Dataset):
         bg_path = random.choice(self.backgrounds)
         
         clean_scan = cv2.imread(str(scan_path))
+        clean_scan = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2RGB)
+
         bg_image = cv2.imread(str(bg_path))
+        bg_image = cv2.cvtColor(bg_image, cv2.COLOR_BGR2RGB)
         
         # Resize to target image size
         bg_image = cv2.resize(bg_image, (self.image_size[1], self.image_size[0]))
