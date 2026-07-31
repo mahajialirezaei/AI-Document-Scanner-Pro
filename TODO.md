@@ -24,6 +24,8 @@
 * Ensure the 80/10/10 split is done strictly by source scan, meaning two degradations of the same page must never appear across different splits.
 * Generate and freeze the Validation and Test sets using a fixed random seed to ensure consistent evaluation across epochs.
 * Prepare real evaluation photos by rectifying them using Roboflow labels, then resizing and normalizing them exactly like synthetic inputs for the enhancement task.
+* **Visually inspect a batch of generated samples by overlaying the corner labels on the composited photos to ensure proper alignment**.
+* **Verify that warping the degraded photo back using the recorded homography aligns pixel-perfectly with the clean target**.
 
 ## Phase 3: Model Architectures (Bonus-Ready)
 
@@ -40,6 +42,7 @@
 * Train Task 2 (Approach A) utilizing an L1 or L2 loss function on the 8 coordinates.
 * Train Task 2 (Approach B) utilizing a pixel-wise loss function on the heatmaps.
 * Plot training and validation loss curves across epochs for all models.
+* **Experiment with the dataset generation ratio to see if the model benefits more from seeing many different degradations of few scans, or few degradations of many scans**[cite: 156, 157].
 
 ## Phase 5: Independent Inference & Evaluation
 
