@@ -44,7 +44,7 @@
 * Plot training and validation loss curves across epochs for all models.
 * **Experiment with the dataset generation ratio to see if the model benefits more from seeing many different degradations of few scans, or few degradations of many scans**[cite: 156, 157].
 
-## Phase 5: Independent Inference & Evaluation
+## Phase 5: Independent Inference & Evaluation ✅ COMPLETED
 
 * Create `evaluate.py` to assess model performance.
 * Compute PSNR and SSIM for the Enhancement network across Training, Validation, and Test splits.
