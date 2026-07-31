@@ -33,5 +33,11 @@ These files are strictly reserved for final model evaluation and must **never** 
 **Contents:**
 * `1_jpg.rf.[hash].jpg` to `15_jpg.rf.[hash].jpg` (15 real smartphone photos)
 * `_annotations.coco.json` (The official COCO format JSON file containing the manual 4-corner keypoint labels for the 15 photos)
-* `README.dataset.txt` 
+* `README.dataset.txt`
 * `README.roboflow.txt`
+
+### 2.2. Real Photos Scanned (Reference Scans)
+**Path:** `data/raw/real_photos_scanned/`
+**Description:** Contains the 15 corresponding clean reference scans (produced via a commercial scanner app) for the real smartphone photos. These serve exclusively as a commercial baseline for qualitative evaluation and OCR readability comparisons.
+**Contents:**
+* `1.jpg` to `15.jpg` (15 reference scan images)
