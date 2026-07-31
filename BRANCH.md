@@ -19,13 +19,18 @@ These branches should all be built from the `develop` branch and merged back int
 **`feature/corner-detection`**: Specific to the implementation of Phases 3 and 4 (Task 2). Design of both direct regression (Approach A) and heatmap (Approach B) approaches along with their respective training loops.
 
 *
-**`feature/evaluation-metrics`**: Specific to the implementation of Phase 5. Writing evaluation scripts, calculating PSNR and SSIM, checking corner detection error, and integrating the OCR engine (Tserket) to calculate readability.
+**`feature/evaluation-metrics`**: Specific to the implementation of Phase 5 (Evaluation Metrics). Writing evaluation scripts, calculating PSNR and SSIM, checking corner detection error, and integrating the OCR engine (Tesseract) to calculate readability.
 
 *
-**`feature/regularization-dropout`**: Specific to the implementation of Phase 6. Enabling and adjusting Dropout layers in the network architecture and retraining to check the effect of regularization.
-
-*
-**`feature/end-to-end-pipeline`**: Specific to the final scoring part (Phase 7). Combining the corner detection network with the Kornia library's `warp_perspective` derivative function, connecting it to the Enhancement network, and fine-tuning the entire system.
-
-*
-**`feature/inference-scripts`**: For creating final, clean scripts for a TA to run the model on a raw image.
+**`feature/inference-scripts`**: ✅ **COMPLETED** - For creating final, clean scripts for a TA to run the model on a raw image. 
+    - **Location**: `src/pipelines/inference.py` (614 lines)
+    - **Contents**: 
+        - Model loading utilities for enhancement and corner detection models
+        - Preprocessing functions (image normalization, tensor conversion)
+        - Enhancement inference: `enhance_document()` for rectified document enhancement
+        - Corner detection: `detect_corners_regression()` (Approach A) and `detect_corners_heatmap()` (Approach B with soft-argmax)
+        - Utility functions: corner ordering, perspective transformation, visualization with overlays
+        - `DocumentScanningPipeline` class: End-to-end processing pipeline
+        - Batch processing: Multi-image processing with automatic saving
+        - CLI interface: Three operational modes (corner detection, enhancement, full pipeline)
+    - **Status**: Merged into `develop` branch, ready for TA evaluation
