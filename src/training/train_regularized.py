@@ -3,16 +3,19 @@ Phase 6: Regularization Strategies for Document Scanning Models
 
 This module implements advanced regularization techniques including:
 - Dynamic Dropout Scheduling
-- Kornia-based Data Augmentation during training
 - Robust Loss Functions (Huber, Smooth L1)
 - Comparison experiments between regularized and baseline models
+
+NOTE: Per PDF section 4.4, third-party libraries like Kornia are prohibited for 
+data augmentation in training phases. Only OpenCV functions should be used for 
+degradations (handled in degradation.py). Kornia is only allowed in Bonus section
+for differentiable warp_perspective operations.
 """
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import kornia.augmentation as K
 from typing import Dict, List, Optional, Tuple
 import logging
 from pathlib import Path
@@ -100,86 +103,6 @@ class DropoutScheduler:
         """Set dropout to 0 for evaluation/inference."""
         for dropout_layer in self.dropout_layers:
             dropout_layer.p = 0.0
-
-
-class DataAugmentationTrainer:
-    """
-    Trainer with Kornia-based on-the-fly data augmentation for regularization.
-    
-    Applies geometric and photometric perturbations during training to improve
-    model robustness to real-world variations.
-    """
-    
-    def __init__(
-        self,
-        model: nn.Module,
-        device: torch.device,
-        use_kornia_aug: bool = True,
-        aug_probability: float = 0.5
-    ):
-        self.model = model
-        self.device = device
-        self.use_kornia_aug = use_kornia_aug
-        
-        # Define Kornia augmentations
-        if use_kornia_aug:
-            self.augmentations = K.AugmentationSequential(
-                K.RandomRotation(degrees=15, p=aug_probability),
-                K.RandomPerspective(p=aug_probability),
-                K.RandomAffine(degrees=0, translate=0.1, scale=(0.9, 1.1), p=aug_probability),
-                K.RandomGaussianNoise(mean=0.0, std=0.05, p=aug_probability),
-                K.RandomBrightness(brightness=0.2, p=aug_probability),
-                K.RandomContrast(contrast=0.2, p=aug_probability),
-                same_on_batch=False,
-                random_apply=True
-            ).to(device)
-            logger.info("Kornia augmentations initialized")
-        else:
-            self.augmentations = None
-    
-    def apply_augmentation(self, images: torch.Tensor) -> torch.Tensor:
-        """Apply augmentations to input images."""
-        if self.use_kornia_aug and self.augmentations is not None:
-            return self.augmentations(images)
-        return images
-    
-    def train_epoch(
-        self,
-        dataloader: DataLoader,
-        optimizer: optim.Optimizer,
-        criterion: nn.Module,
-        epoch: int,
-        use_augmentation: bool = True
-    ) -> Dict[str, float]:
-        """Train for one epoch with optional augmentation."""
-        self.model.train()
-        total_loss = 0.0
-        num_batches = 0
-        
-        for batch_idx, (images, targets) in enumerate(dataloader):
-            images = images.to(self.device)
-            targets = targets.to(self.device)
-            
-            # Apply augmentation if enabled
-            if use_augmentation:
-                images = self.apply_augmentation(images)
-            
-            optimizer.zero_grad()
-            outputs = self.model(images)
-            loss = criterion(outputs, targets)
-            loss.backward()
-            optimizer.step()
-            
-            total_loss += loss.item()
-            num_batches += 1
-            
-            if batch_idx % 50 == 0:
-                logger.info(f"Epoch {epoch}, Batch {batch_idx}: Loss = {loss.item():.6f}")
-        
-        avg_loss = total_loss / num_batches
-        logger.info(f"Epoch {epoch} completed - Average Loss: {avg_loss:.6f}")
-        
-        return {'loss': avg_loss}
 
 
 def create_robust_criterion(
@@ -311,7 +234,6 @@ class RegularizationExperiment:
         
         # Initialize regularization components
         dropout_scheduler = None
-        aug_trainer = None
         criterion = None
         
         if use_regularization:
@@ -323,11 +245,6 @@ class RegularizationExperiment:
                 final_dropout=0.3,
                 warmup_epochs=10,
                 total_epochs=epochs
-            )
-            
-            # Kornia augmentation trainer
-            aug_trainer = DataAugmentationTrainer(
-                model, self.device, use_kornia_aug=True, aug_probability=0.7
             )
             
             # Robust loss function
@@ -350,24 +267,18 @@ class RegularizationExperiment:
             if dropout_scheduler is not None:
                 dropout_scheduler.step(epoch)
             
-            # Training phase
-            if aug_trainer is not None:
-                train_metrics = aug_trainer.train_epoch(
-                    train_loader, optimizer, criterion, epoch, use_augmentation=True
-                )
-            else:
-                # Simple training loop for baseline
-                model.train()
-                total_loss = 0.0
-                for images, targets in train_loader:
-                    images, targets = images.to(self.device), targets.to(self.device)
-                    optimizer.zero_grad()
-                    outputs = model(images)
-                    loss = criterion(outputs, targets)
-                    loss.backward()
-                    optimizer.step()
-                    total_loss += loss.item()
-                train_metrics = {'loss': total_loss / len(train_loader)}
+            # Training phase - simple training loop (no Kornia augmentation)
+            model.train()
+            total_loss = 0.0
+            for images, targets in train_loader:
+                images, targets = images.to(self.device), targets.to(self.device)
+                optimizer.zero_grad()
+                outputs = model(images)
+                loss = criterion(outputs, targets)
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+            train_metrics = {'loss': total_loss / len(train_loader)}
             
             # Validation phase
             model.eval()
