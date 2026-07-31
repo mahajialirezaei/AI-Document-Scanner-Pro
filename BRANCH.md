@@ -34,3 +34,32 @@ These branches should all be built from the `develop` branch and merged back int
         - Batch processing: Multi-image processing with automatic saving
         - CLI interface: Three operational modes (corner detection, enhancement, full pipeline)
     - **Status**: Merged into `develop` branch, ready for TA evaluation
+
+*
+**`feature/regularization-e2e`**: ✅ **COMPLETED** - Phase 6 implementation with regularization strategies and end-to-end joint training.
+    - **Locations**: 
+        - `src/training/train_regularized.py` (454 lines) - Regularization techniques
+        - `src/pipelines/train_e2e.py` (585 lines) - End-to-end multi-task learning
+    - **Contents of train_regularized.py**:
+        - `DropoutScheduler`: Dynamic dropout rate adjustment with linear, cosine, and step strategies
+        - `DataAugmentationTrainer`: Kornia-based on-the-fly geometric and photometric augmentations
+        - `create_robust_loss()`: Huber, Smooth L1, L1, MSE loss functions
+        - `RegularizedTrainingPipeline`: Complete pipeline combining dropout scheduling, augmentation, and robust losses
+    - **Contents of train_e2e.py**:
+        - `MultiTaskLoss`: Weighted combination of enhancement and corner losses with optional uncertainty-based weighting
+        - `SharedBackboneNetwork`: Multi-task architecture with shared backbone and task-specific heads
+        - `JointTrainer`: Supports alternating and simultaneous gradient updates
+        - `EndToEndPipeline`: Complete end-to-end training with progressive unfreezing strategy
+    - **Status**: Merged into `develop` branch, Phase 6 complete
+
+---
+
+### Summary of Completed Phases
+
+| Phase | Branch | Status | Key Deliverables |
+|-------|--------|--------|------------------|
+| Phase 2 | `feature/data-engineering` | ✅ Merged | Dataset classes, degradation pipeline (OpenCV) |
+| Phase 3 | `feature/enhancement-network` | ✅ Merged | U-Net, regression & heatmap models |
+| Phase 4 | `feature/enhancement-network`, `feature/corner-detection` | ✅ Merged | Training loops, loss functions |
+| Phase 5 | `feature/inference-scripts` | ✅ Merged | Inference pipelines, evaluation metrics |
+| Phase 6 | `feature/regularization-e2e` | ✅ Merged | Dropout scheduling, Kornia augmentation, E2E training |
