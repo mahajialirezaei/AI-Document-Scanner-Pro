@@ -22,7 +22,7 @@ class EnhancementTrainer:
         from .losses import EnhancementLoss
         self.criterion = EnhancementLoss(l1_weight=l1_weight, edge_weight=edge_weight).to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+        self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10)
         
         self.num_epochs = num_epochs
         self.best_val_loss = float('inf')
