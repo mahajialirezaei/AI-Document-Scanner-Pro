@@ -71,7 +71,7 @@ def main():
     model_heat = CornerHeatmapModel(dropout_rate=0.0).to(device)
     
     try:
-        model_reg.load_state_dict(torch.load("checkpoints/corner_reg/best_model.pth", map_location=device)['model_state_dict'])
+        model_reg.load_state_dict(torch.load("checkpoints/corner_regression/best_model.pth", map_location=device)['model_state_dict'])
         model_heat.load_state_dict(torch.load("checkpoints/corner_heat/best_model.pth", map_location=device)['model_state_dict'])
     except Exception as e:
         print(f"Could not load model checkpoints. Ensure they exist. Error: {e}")
