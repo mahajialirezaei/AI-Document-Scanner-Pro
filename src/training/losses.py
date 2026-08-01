@@ -97,9 +97,16 @@ class CornerLoss(nn.Module):
         return self.loss(pred, target)
 
 class HeatmapLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, alpha=100.0, beta=1.0):
         super().__init__()
-        self.mse = nn.MSELoss()
+        self.alpha = alpha
+        self.beta = beta
 
     def forward(self, pred_heatmaps, target_heatmaps):
-        return self.mse(pred_heatmaps, target_heatmaps)
+        mse = (pred_heatmaps - target_heatmaps) ** 2
+        
+        weights = (self.alpha * target_heatmaps) + self.beta
+        
+        weighted_loss = mse * weights
+        
+        return weighted_loss.mean()
