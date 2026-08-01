@@ -1,0 +1,18 @@
+# Core Dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=9.5.0
+
+# Data & Augmentation
+kornia>=0.6.0
+
+# Evaluation Metrics
+scikit-image>=0.20.0
+pytesseract>=0.3.10
+
+# Web UI
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
