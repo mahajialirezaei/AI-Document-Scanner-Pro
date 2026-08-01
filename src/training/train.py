@@ -334,8 +334,8 @@ if __name__ == '__main__':
                         help="Which task to train")
     
     parser.add_argument("--data-dir", type=str, default="data/raw", help="Unused in training (kept for README compatibility)")
-    parser.add_argument("--annotations", type=str, default="data/annotations/_annotations.coco.json", help="Unused in training")
-    
+    parser.add_argument("--annotations", type=str, default="data/raw/real_photos/_annotations.coco.json", help="Unused in training")
+
     parser.add_argument("--clean-scans", type=str, default="data/clean_scans", help="Path to clean scans")
     parser.add_argument("--backgrounds", type=str, default="data/random_backgrounds", help="Path to random backgrounds")
     

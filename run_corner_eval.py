@@ -46,7 +46,7 @@ def main():
     
     # Configs
     real_photos_dir = "data/raw/real_photos"
-    annotation_file = "data/annotations/_annotations.coco.json"
+    annotation_file = "data/raw/real_photos/_annotations.coco.json"
     clean_dir = "data/clean_scans"
     bg_dir = "data/random_backgrounds"
     image_size = (256, 256)

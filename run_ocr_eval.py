@@ -170,9 +170,9 @@ def main():
     """Main entry point."""
     # Configuration
     enhancement_ckpt = "checkpoints/enhancement/best_model.pth"
-    corner_ckpt = "checkpoints/corner_heat/best_model.pth"
+    corner_ckpt = "checkpoints/corner_heatmap/best_model.pth"
     real_photos_dir = "data/raw/real_photos"
-    annotation_file = "data/annotations/_annotations.coco.json"
+    annotation_file = "data/raw/real_photos/_annotations.coco.json"
     scanned_photos_dir = "data/raw/real_photos_scanned"
     image_size = (512, 512)
     
