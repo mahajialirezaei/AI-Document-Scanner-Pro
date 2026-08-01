@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from src.models.model import CornerRegressionModel, CornerHeatmapModel
 from src.data.dataset import RealEvaluationDataset
+from src.data.data_splitter import get_synthetic_splits
 from src.evaluation.evaluate import CornerDetectionEvaluator
 
 def evaluate_model(model, dataloader, evaluator, device):
@@ -46,6 +47,8 @@ def main():
     # Configs
     real_photos_dir = "data/raw/real_photos"
     annotation_file = "data/annotations/_annotations.coco.json"
+    clean_dir = "data/clean_scans"
+    bg_dir = "data/random_backgrounds"
     image_size = (256, 256)
     
     if not os.path.exists(real_photos_dir):
@@ -57,8 +60,13 @@ def main():
     real_ds = RealEvaluationDataset(real_photos_dir, annotation_file, image_size=image_size)
     real_loader = DataLoader(real_ds, batch_size=8, shuffle=False)
     
+    # Load Synthetic Test Dataset
+    print("Loading Synthetic Evaluation Dataset...")
+    _, _, test_ds = get_synthetic_splits(clean_dir, bg_dir, image_size=image_size, num_eval_samples=100)
+    synth_loader = DataLoader(test_ds, batch_size=8, shuffle=False)
+
     # Load Models
-    print("Loading Models...")
+    print("\nLoading Models...")
     model_reg = CornerRegressionModel(dropout_rate=0.0).to(device)
     model_heat = CornerHeatmapModel(dropout_rate=0.0).to(device)
     
@@ -75,26 +83,32 @@ def main():
     # Initialize Evaluator (success threshold: 5 pixels)
     evaluator = CornerDetectionEvaluator(image_size=image_size, success_threshold=5.0)
     
-    # Evaluate
-    print("\nEvaluating Approach A: Direct Regression...")
-    reg_metrics = evaluate_model(model_reg, real_loader, evaluator, device)
+    # Evaluate Real
+    print("\nEvaluating Approach A: Direct Regression (Real Photos)...")
+    reg_real_metrics = evaluate_model(model_reg, real_loader, evaluator, device)
+    print("Evaluating Approach B: Heatmap (Real Photos)...")
+    heat_real_metrics = evaluate_model(model_heat, real_loader, evaluator, device)
     
-    print("Evaluating Approach B: Heatmap + Soft-Argmax...")
-    heat_metrics = evaluate_model(model_heat, real_loader, evaluator, device)
-    
+    # Evaluate Synthetic
+    print("\nEvaluating Approach A: Direct Regression (Synthetic Test)...")
+    reg_synth_metrics = evaluate_model(model_reg, synth_loader, evaluator, device)
+    print("Evaluating Approach B: Heatmap (Synthetic Test)...")
+    heat_synth_metrics = evaluate_model(model_heat, synth_loader, evaluator, device)
+
     # Print Comparison Table
-    comparison = evaluator.compare_approaches(reg_metrics, heat_metrics)
-    
-    print("\n" + "="*60)
-    print("CORNER DETECTION EVALUATION (REAL PHOTOS)")
-    print("="*60)
-    print(f"{'Metric':<25} | {'Approach A (Regression)':<20} | {'Approach B (Heatmap)':<20}")
-    print("-" * 65)
-    print(f"{'Mean Error (Pixels)':<25} | {reg_metrics['mean_localization_error']:<20.2f} | {heat_metrics['mean_localization_error']:<20.2f}")
-    print(f"{'Success Rate (<= 5px)':<25} | {reg_metrics['success_rate']*100:<19.1f}% | {heat_metrics['success_rate']*100:<19.1f}%")
-    print("-" * 65)
-    print(f"VERDICT: Approach {comparison['better_approach']} is more accurate.")
-    print("="*60)
+    print("\n" + "="*80)
+    print("CORNER DETECTION EVALUATION")
+    print("="*80)
+    print(f"{'Metric':<25} | {'Approach A (Regression)':<25} | {'Approach B (Heatmap)':<25}")
+    print("-" * 80)
+    print("--- REAL PHOTOS ---")
+    print(f"{'Mean Error (Pixels)':<25} | {reg_real_metrics['mean_localization_error']:<25.2f} | {heat_real_metrics['mean_localization_error']:<25.2f}")
+    print(f"{'Success Rate (<= 5px)':<25} | {reg_real_metrics['success_rate']*100:<24.1f}% | {heat_real_metrics['success_rate']*100:<24.1f}%")
+    print("-" * 80)
+    print("--- SYNTHETIC TEST SET ---")
+    print(f"{'Mean Error (Pixels)':<25} | {reg_synth_metrics['mean_localization_error']:<25.2f} | {heat_synth_metrics['mean_localization_error']:<25.2f}")
+    print(f"{'Success Rate (<= 5px)':<25} | {reg_synth_metrics['success_rate']*100:<24.1f}% | {heat_synth_metrics['success_rate']*100:<24.1f}%")
+    print("="*80)
 
 if __name__ == '__main__':
     main()
