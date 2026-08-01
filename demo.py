@@ -242,11 +242,30 @@ def process_single_image(
     # Step 1: Detect corners (Pass corner_model FIRST, then image_bgr)
     print("  Step 1: Detecting corners...")
     if corner_approach == "heatmap":
-        corners_px, _ = detect_corners_heatmap(
+        corners_px, heatmaps_np = detect_corners_heatmap(
             corner_model,
             image_bgr,
             device=str(device),
         )
+        
+        # --- بخش جدید: ذخیره نقشه‌های حرارتی خام ---
+        if heatmaps_np is not None:
+            fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+            titles = ['Channel 0', 'Channel 1', 'Channel 2', 'Channel 3']
+            for i, ax in enumerate(axes.flat):
+                if i < len(heatmaps_np):
+                    # استفاده از colormap حرارتی برای دید بهتر
+                    ax.imshow(heatmaps_np[i], cmap='jet')
+                    ax.set_title(f"Heatmap {titles[i]}")
+                ax.axis('off')
+            plt.tight_layout()
+            heatmap_viz_path = os.path.join(output_dir, f"{base_name}_raw_heatmaps.png")
+            plt.savefig(heatmap_viz_path, dpi=150)
+            plt.close()
+            output_paths["heatmaps"] = heatmap_viz_path
+            print(f"  Saved raw heatmaps: {heatmap_viz_path}")
+        # --------------------------------------------
+
     else:
         corners_px, _ = detect_corners_regression(
             corner_model,

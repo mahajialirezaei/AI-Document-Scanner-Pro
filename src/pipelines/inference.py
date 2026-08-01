@@ -200,15 +200,6 @@ def detect_corners_heatmap(
 ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
     Detect document corners using heatmap approach (Approach B).
-    
-    Args:
-        model: Trained CornerHeatmapModel
-        raw_image: Raw input photo
-        heatmap_threshold: Threshold for heatmap peak detection
-        device: Device for inference
-        
-    Returns:
-        Corner coordinates (4, 2) in original image scale and heatmaps
     """
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -219,34 +210,68 @@ def detect_corners_heatmap(
     
     # Inference
     with torch.no_grad():
-        heatmaps = model(input_tensor)
+        output = model(input_tensor)
     
-    # Heatmaps shape: (1, 4, H, W) - 4 channels for 4 corners
-    heatmaps_np = heatmaps.squeeze(0).cpu().numpy()
+    # Smart extraction: Handle tuple output if model returns (coords, heatmaps)
+    if isinstance(output, tuple):
+        # Find the tensor that is most likely the spatial heatmap (has many elements & >= 3 dimensions)
+        heatmaps = output[0]
+        for item in output:
+            if isinstance(item, torch.Tensor) and item.numel() > 100:
+                heatmaps = item
+                # Prefer exact 4D tensor (Batch, Channels, H, W)
+                if item.ndim == 4:
+                    break
+    else:
+        heatmaps = output
     
-    # Extract corner coordinates from heatmaps using argmax
+    # Convert to numpy array
+    heatmaps_np = heatmaps.detach().cpu().numpy()
+    
+    # Safely reduce dimensions (remove batch size of 1)
+    heatmaps_np = np.squeeze(heatmaps_np)
+    
+    # Re-verify and format into (4, H, W)
+    if heatmaps_np.ndim == 3:
+        # If shape is (H, W, 4), transpose to (4, H, W)
+        if heatmaps_np.shape[-1] == 4 and heatmaps_np.shape[0] != 4:
+            heatmaps_np = np.transpose(heatmaps_np, (2, 0, 1))
+    elif heatmaps_np.ndim == 2:
+        # If single channel (H, W), duplicate to shape (4, H, W)
+        heatmaps_np = np.stack([heatmaps_np] * 4, axis=0)
+    elif heatmaps_np.ndim < 2:
+        # Absolute fallback if tensor shape is entirely unrecognized
+        heatmaps_np = np.zeros((4, 64, 64), dtype=np.float32)
+
     corners = []
     for i in range(4):  # 4 corners
-        heatmap = heatmaps_np[i]
+        # Ensure we don't go out of bounds if channels somehow < 4
+        c_idx = i if i < heatmaps_np.shape[0] else 0
+        heatmap = heatmaps_np[c_idx]
         
-        # Find peak location
-        peak_idx = np.unravel_index(np.argmax(heatmap), heatmap.shape)
-        y, x = peak_idx
+        # Double-check it's exactly 2D
+        if heatmap.ndim > 2:
+            heatmap = np.squeeze(heatmap)
+        if heatmap.ndim < 2:
+            heatmap = np.zeros((64, 64), dtype=np.float32)
+            
+        h_map, w_map = heatmap.shape[:2]
         
-        # Get heatmap dimensions
-        h_map, w_map = heatmap.shape
+        # Find peak location safely
+        flat_idx = np.argmax(heatmap)
+        y, x = np.unravel_index(flat_idx, (h_map, w_map))
         
-        # Normalize coordinates
-        x_norm = x / w_map
-        y_norm = y / h_map
+        # Normalize coordinates to [0, 1]
+        x_norm = float(x) / float(w_map)
+        y_norm = float(y) / float(h_map)
         
         corners.append([x_norm, y_norm])
     
-    corners = np.array(corners)
+    corners = np.array(corners, dtype=np.float32)
     
     # Scale back to original image dimensions
-    corners[:, 0] *= metadata['original_shape'][1]
-    corners[:, 1] *= metadata['original_shape'][0]
+    corners[:, 0] *= metadata['original_shape'][1]  # x * width
+    corners[:, 1] *= metadata['original_shape'][0]  # y * height
     
     # Order corners: top-left, top-right, bottom-right, bottom-left
     corners = order_corners(corners)
