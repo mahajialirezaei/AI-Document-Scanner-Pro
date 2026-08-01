@@ -72,7 +72,7 @@ def main():
     
     try:
         model_reg.load_state_dict(torch.load("checkpoints/corner_regression/best_model.pth", map_location=device)['model_state_dict'])
-        model_heat.load_state_dict(torch.load("checkpoints/corner_heat/best_model.pth", map_location=device)['model_state_dict'])
+        model_heat.load_state_dict(torch.load("checkpoints/corner_heatmap/best_model.pth", map_location=device)['model_state_dict'])
     except Exception as e:
         print(f"Could not load model checkpoints. Ensure they exist. Error: {e}")
         return
