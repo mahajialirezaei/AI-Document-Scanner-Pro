@@ -101,7 +101,8 @@ def preprocess_image(
 def enhance_document(
     model: torch.nn.Module,
     rectified_image: np.ndarray,
-    device: str = None
+    device: str = None,
+    image_size: int = 1024
 ) -> Tuple[np.ndarray, torch.Tensor]:
     """
     Enhance a rectified document image using the enhancement network.
@@ -118,7 +119,7 @@ def enhance_document(
         device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Preprocess
-    input_tensor, metadata = preprocess_image(rectified_image)
+    input_tensor, metadata = preprocess_image(rectified_image, input_size=image_size)
     input_tensor = input_tensor.to(device)
     
     # Inference
@@ -456,7 +457,7 @@ class DocumentScanningPipeline:
         
         # Step 3: Enhance document
         enhanced, _ = enhance_document(
-            self.enhancement_model, rectified, device=self.device
+            self.enhancement_model, rectified, device=self.device, image_size=1024
         )
         results['enhanced'] = enhanced
         

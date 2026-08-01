@@ -366,8 +366,8 @@ if __name__ == '__main__':
         print("Please ensure 'data/clean_scans' and 'data/random_backgrounds' directories exist and contain images.")
         sys.exit(1)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8)
 
     # 2. Initialize Model
     print(f"Initializing {args.task} model...")
