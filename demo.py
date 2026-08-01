@@ -34,7 +34,7 @@ from src.pipelines.inference import (
     enhance_document,
     order_corners,
     apply_perspective_transform,
-    visualize_corners,
+    draw_corners_on_image,
     DocumentScanningPipeline,
 )
 from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
@@ -176,11 +176,9 @@ def load_enhancement_model(
     
     print(f"Loading enhancement model from: {model_path}")
     model = load_model(
-        model_path=model_path,
-        model_class=EnhancementUNet,
-        device=device,
-        in_channels=3,
-        out_channels=3,
+        "enhancement",
+        model_path,
+        device=str(device),
     )
     model.eval()
     return model
@@ -204,23 +202,12 @@ def load_corner_model(
     
     print(f"Loading corner model ({approach}) from: {model_path}")
     
-    if approach == "heatmap":
-        model = load_model(
-            model_path=model_path,
-            model_class=CornerHeatmapModel,
-            device=device,
-            in_channels=3,
-            num_classes=4,
-        )
-    else:
-        model = load_model(
-            model_path=model_path,
-            model_class=CornerRegressionModel,
-            device=device,
-            in_channels=3,
-            num_coords=8,
-        )
-    
+    model_type = "corner_heatmap" if approach == "heatmap" else "corner_regression"
+    model = load_model(
+        model_type,
+        model_path,
+        device=str(device),
+    )
     model.eval()
     return model
 
@@ -248,45 +235,38 @@ def process_single_image(
     if image_bgr is None:
         raise ValueError(f"Failed to load image: {image_path}")
     
-    original_size = image_bgr.shape[:2]
-    
     # Create output filename
     base_name = Path(image_path).stem
     output_paths = {}
     
-    # Step 1: Detect corners (preprocess_image expects BGR and does BGR2RGB internally)
+    # Step 1: Detect corners (Pass corner_model FIRST, then image_bgr)
     print("  Step 1: Detecting corners...")
     if corner_approach == "heatmap":
         corners_px, _ = detect_corners_heatmap(
-            image_bgr,
             corner_model,
-            device,
-            image_size=image_size,
+            image_bgr,
+            device=str(device),
         )
     else:
         corners_px, _ = detect_corners_regression(
-            image_bgr,
             corner_model,
-            device,
-            image_size=image_size,
+            image_bgr,
+            device=str(device),
         )
     
     corners_ordered = order_corners(corners_px)
-    
     print(f"  Corners detected: {corners_ordered.tolist()}")
     
-    # Save corner visualization if requested (convert to RGB only for saving/display)
+    # Save corner visualization if requested
     if save_intermediate or visualize:
-        # For visualization, convert BGR to RGB
         image_rgb_for_viz = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        corner_viz = visualize_corners(image_rgb_for_viz, corners_ordered)
+        corner_viz = draw_corners_on_image(image_rgb_for_viz, corners_ordered)
         corner_path = os.path.join(output_dir, f"{base_name}_corners.png")
-        # Save as BGR for cv2.imwrite
         cv2.imwrite(corner_path, cv2.cvtColor(corner_viz, cv2.COLOR_RGB2BGR))
         output_paths["corners"] = corner_path
         print(f"  Saved corner visualization: {corner_path}")
     
-    # Step 2: Apply perspective transform (input is BGR, output is BGR)
+    # Step 2: Apply perspective transform
     print("  Step 2: Applying perspective transform...")
     warped_bgr = apply_perspective_transform(
         image_bgr,
@@ -300,28 +280,27 @@ def process_single_image(
         output_paths["warped"] = warped_path
         print(f"  Saved warped image: {warped_path}")
     
-    # Step 3: Enhance document (enhance_document expects BGR input)
+    # Step 3: Enhance document
     print("  Step 3: Enhancing document...")
-    enhanced_bgr = enhance_document(
-        warped_bgr,
+    enhanced_bgr, _ = enhance_document(
         enhancement_model,
-        device,
+        warped_bgr,
+        device=str(device),
         image_size=image_size,
     )
     
-    # Save enhanced result (BGR format for cv2.imwrite)
+    # Save enhanced result
     enhanced_path = os.path.join(output_dir, f"{base_name}_enhanced.png")
     cv2.imwrite(enhanced_path, enhanced_bgr)
     output_paths["enhanced"] = enhanced_path
     print(f"  Saved enhanced image: {enhanced_path}")
     
-    # Step 4: Create visualization if requested (convert to RGB only for matplotlib)
+    # Step 4: Create visualization if requested
     if visualize:
         print("  Step 4: Creating visualization...")
-        # Convert BGR images to RGB for matplotlib display
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         warped_rgb = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2RGB)
-        enhanced_rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+        enhanced_rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_RGB2BGR)
         
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
@@ -417,7 +396,6 @@ def main():
     
     if is_batch:
         print("Mode: Batch processing")
-        input_dir = args.input
     else:
         print("Mode: Single image")
         if not os.path.exists(args.input):
@@ -459,7 +437,7 @@ def main():
             device=device,
             image_size=args.image_size,
             visualize=args.visualize,
-            save_intermediate=args.save_intermediate,
+            save_intermediate=save_intermediate,
         )
         
         print("\n" + "=" * 60)
