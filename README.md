@@ -239,7 +239,7 @@ CNN-Applications-Doc-Scanning-And-Enhancement/
 
 ## 👥 Team
 
-* **Developer**: Mahdi Hajialirezaei
+* **Developer**: Mohammad Amin Haji Alirezaei
 * **Contact**: m.a.hajialirezaei05@gmail.com
 * **GitHub**: [@mahajialirezaei](https://github.com/mahajialirezaei)
 

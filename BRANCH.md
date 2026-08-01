@@ -66,6 +66,16 @@ These branches should all be built from the `develop` branch and merged back int
 * **`feature/final-delivery`**: Final delivery preparation branch.
     - **Status**: Active branch
 
+* **`feature/web-ui`**: 🔄 **IN PROGRESS** - Lightweight Web UI for document scanning and enhancement.
+    - **Location**: `web_app.py` (FastAPI backend), `static/` (Vanilla HTML/CSS/JS frontend)
+    - **Contents**: 
+        - FastAPI backend with `/scan` endpoint for image processing
+        - DocumentScanningPipeline integration with heatmap corner detection
+        - Drag-and-drop file upload interface
+        - Side-by-side comparison of raw and enhanced images
+        - Real-time processing with loading indicators
+    - **Status**: Active/In Progress
+
 * **`feature/inference-scripts`**: ✅ **COMPLETED** - For creating final, clean scripts for a TA to run the model on a raw image. 
     - **Location**: `src/pipelines/inference.py` (614 lines)
     - **Contents**: 
