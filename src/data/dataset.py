@@ -172,6 +172,14 @@ class SyntheticDocumentDataset(Dataset):
         return self._generate_single_sample(idx)
 
 class RealEvaluationDataset(Dataset):
+    """
+    Dataset for evaluating real document photos.
+    
+    Provides:
+    1. Raw photo with scaled corner coordinates (for corner detector evaluation)
+    2. Rectified crop using ground-truth annotated corners (for enhancement network evaluation)
+    """
+    
     def __init__(self, 
                  real_photos_dir: str, 
                  annotation_file: str, 
@@ -200,28 +208,67 @@ class RealEvaluationDataset(Dataset):
         image_id = self.image_ids[idx]
         img_info = self.images_info[image_id]
         
+        # Read image and convert to RGB
         filepath = os.path.join(self.root_dir, img_info['file_name'])
-        image = cv2.imread(filepath)
-        original_h, original_w = image.shape[:2]
+        image_bgr = cv2.imread(filepath)
+        if image_bgr is None:
+            raise ValueError(f"Failed to load image: {filepath}")
         
-        image_resized = cv2.resize(image, (self.image_size[1], self.image_size[0]))
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        original_h, original_w = image_rgb.shape[:2]
         
+        # Extract ground-truth corners from COCO annotations
         ann = self.annotations_by_image.get(image_id, [{}])[0]
         keypoints = ann.get('keypoints', [0]*12)
         
-        corners = np.zeros((4, 2), dtype=np.float32)
+        # Extract 4 corners (x, y) from keypoints
+        corners_original = np.zeros((4, 2), dtype=np.float32)
         for i in range(4):
-            corners[i, 0] = keypoints[i * 3]
-            corners[i, 1] = keypoints[i * 3 + 1]
-            
-        corners[:, 0] = (corners[:, 0] * (self.image_size[1] / original_w)) / self.image_size[1]
-        corners[:, 1] = (corners[:, 1] * (self.image_size[0] / original_h)) / self.image_size[0]
-
-        image_tensor = torch.from_numpy(image_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
-
+            corners_original[i, 0] = keypoints[i * 3]      # x
+            corners_original[i, 1] = keypoints[i * 3 + 1]  # y
+        
+        # Scale image to self.image_size
+        image_resized = cv2.resize(image_rgb, (self.image_size[1], self.image_size[0]))
+        
+        # Scale corners proportionally
+        scale_x = self.image_size[1] / original_w
+        scale_y = self.image_size[0] / original_h
+        
+        corners_scaled = corners_original.copy()
+        corners_scaled[:, 0] *= scale_x
+        corners_scaled[:, 1] *= scale_y
+        
+        # Normalize corners to [0, 1]
+        corners_norm = corners_scaled.copy()
+        corners_norm[:, 0] /= self.image_size[1]
+        corners_norm[:, 1] /= self.image_size[0]
+        
+        # Create rectified crop using ground-truth corners
+        # Define destination points for perspective transform
+        dst_points = np.array([
+            [0, 0],
+            [self.image_size[1] - 1, 0],
+            [self.image_size[1] - 1, self.image_size[0] - 1],
+            [0, self.image_size[0] - 1]
+        ], dtype=np.float32)
+        
+        # Compute homography matrix
+        H, _ = cv2.findHomography(corners_scaled.astype(np.float32), dst_points)
+        
+        # Apply perspective transform to get rectified crop
+        rectified_crop = cv2.warpPerspective(image_rgb, H, (self.image_size[1], self.image_size[0]))
+        
+        # Convert to tensors (CHW, float32, normalized to [0, 1])
+        # Raw photo tensor
+        raw_photo_tensor = torch.from_numpy(image_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
+        
+        # Rectified input tensor
+        rectified_tensor = torch.from_numpy(rectified_crop.astype(np.float32) / 255.0).permute(2, 0, 1)
+        
         return {
-            'raw_photo': image_tensor,
-            'corners': torch.from_numpy(corners),
+            'raw_photo': raw_photo_tensor,
+            'corners': torch.from_numpy(corners_norm),
+            'rectified_input': rectified_tensor,
             'original_shape': (original_h, original_w),
             'filename': img_info['file_name']
         }

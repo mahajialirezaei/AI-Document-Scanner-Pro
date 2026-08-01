@@ -242,31 +242,30 @@ def process_single_image(
     Returns:
         Dictionary with paths to output files
     """
-    # Load image
+    # Load image - Keep in BGR format for all processing steps
     print(f"Processing: {image_path}")
-    image = cv2.imread(image_path)
-    if image is None:
+    image_bgr = cv2.imread(image_path)
+    if image_bgr is None:
         raise ValueError(f"Failed to load image: {image_path}")
     
-    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    original_size = image_rgb.shape[:2]
+    original_size = image_bgr.shape[:2]
     
     # Create output filename
     base_name = Path(image_path).stem
     output_paths = {}
     
-    # Step 1: Detect corners
+    # Step 1: Detect corners (preprocess_image expects BGR and does BGR2RGB internally)
     print("  Step 1: Detecting corners...")
     if corner_approach == "heatmap":
         corners_norm = detect_corners_heatmap(
-            image_rgb,
+            image_bgr,
             corner_model,
             device,
             image_size=image_size,
         )
     else:
         corners_norm = detect_corners_regression(
-            image_rgb,
+            image_bgr,
             corner_model,
             device,
             image_size=image_size,
@@ -279,46 +278,54 @@ def process_single_image(
     
     print(f"  Corners detected: {corners_ordered.tolist()}")
     
-    # Save corner visualization if requested
+    # Save corner visualization if requested (convert to RGB only for saving/display)
     if save_intermediate or visualize:
-        corner_viz = visualize_corners(image_rgb, corners_ordered)
+        # For visualization, convert BGR to RGB
+        image_rgb_for_viz = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        corner_viz = visualize_corners(image_rgb_for_viz, corners_ordered)
         corner_path = os.path.join(output_dir, f"{base_name}_corners.png")
+        # Save as BGR for cv2.imwrite
         cv2.imwrite(corner_path, cv2.cvtColor(corner_viz, cv2.COLOR_RGB2BGR))
         output_paths["corners"] = corner_path
         print(f"  Saved corner visualization: {corner_path}")
     
-    # Step 2: Apply perspective transform
+    # Step 2: Apply perspective transform (input is BGR, output is BGR)
     print("  Step 2: Applying perspective transform...")
-    warped = apply_perspective_transform(
-        image_rgb,
+    warped_bgr = apply_perspective_transform(
+        image_bgr,
         corners_ordered,
         output_size=(image_size, image_size),
     )
     
     if save_intermediate:
         warped_path = os.path.join(output_dir, f"{base_name}_warped.png")
-        cv2.imwrite(warped_path, cv2.cvtColor(warped, cv2.COLOR_RGB2BGR))
+        cv2.imwrite(warped_path, warped_bgr)
         output_paths["warped"] = warped_path
         print(f"  Saved warped image: {warped_path}")
     
-    # Step 3: Enhance document
+    # Step 3: Enhance document (enhance_document expects BGR input)
     print("  Step 3: Enhancing document...")
-    enhanced = enhance_document(
-        warped,
+    enhanced_bgr = enhance_document(
+        warped_bgr,
         enhancement_model,
         device,
         image_size=image_size,
     )
     
-    # Save enhanced result
+    # Save enhanced result (BGR format for cv2.imwrite)
     enhanced_path = os.path.join(output_dir, f"{base_name}_enhanced.png")
-    cv2.imwrite(enhanced_path, cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR))
+    cv2.imwrite(enhanced_path, enhanced_bgr)
     output_paths["enhanced"] = enhanced_path
     print(f"  Saved enhanced image: {enhanced_path}")
     
-    # Step 4: Create visualization if requested
+    # Step 4: Create visualization if requested (convert to RGB only for matplotlib)
     if visualize:
         print("  Step 4: Creating visualization...")
+        # Convert BGR images to RGB for matplotlib display
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        warped_rgb = cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2RGB)
+        enhanced_rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+        
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         
         # Original with corners
@@ -327,12 +334,12 @@ def process_single_image(
         axes[0].axis('off')
         
         # Warped
-        axes[1].imshow(warped)
+        axes[1].imshow(warped_rgb)
         axes[1].set_title("Perspective Corrected")
         axes[1].axis('off')
         
         # Enhanced
-        axes[2].imshow(enhanced)
+        axes[2].imshow(enhanced_rgb)
         axes[2].set_title("Enhanced Scan")
         axes[2].axis('off')
         
