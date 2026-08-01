@@ -52,15 +52,42 @@ class SyntheticDocumentDataset(Dataset):
             self._cache_all_samples(num_samples)
 
     def _generate_random_corners(self, bg_w: int, bg_h: int) -> np.ndarray:
-        """Generate 4 random corner points within reasonable bounds on the background."""
-        margin_x, margin_y = bg_w // 5, bg_h // 5
+        """Generate 4 random corner points with random scale, rotation, and perspective."""
+        scale = random.uniform(0.40, 0.95)
+        doc_w = bg_w * scale
+        doc_h = bg_h * scale
         
-        tl = [random.randint(0, margin_x), random.randint(0, margin_y)]
-        tr = [random.randint(bg_w - margin_x, bg_w), random.randint(0, margin_y)]
-        br = [random.randint(bg_w - margin_x, bg_w), random.randint(bg_h - margin_y, bg_h)]
-        bl = [random.randint(0, margin_x), random.randint(bg_h - margin_y, bg_h)]
+        cx = random.uniform(doc_w / 2, bg_w - (doc_w / 2))
+        cy = random.uniform(doc_h / 2, bg_h - (doc_h / 2))
         
-        return np.float32([tl, tr, br, bl])
+        corners = np.array([
+            [-doc_w/2, -doc_h/2],
+            [ doc_w/2, -doc_h/2],
+            [ doc_w/2,  doc_h/2],
+            [-doc_w/2,  doc_h/2]
+        ])
+        
+        angle = random.uniform(-15, 15)
+        theta = np.radians(angle)
+        c, s = np.cos(theta), np.sin(theta)
+        R = np.array(((c, -s), (s, c)))
+        rotated_corners = np.dot(corners, R.T)
+        
+        corners_placed = rotated_corners + np.array([cx, cy])
+        
+        jitter_x = doc_w * 0.10
+        jitter_y = doc_h * 0.10
+        jitter = np.array([
+            [random.uniform(-jitter_x, jitter_x), random.uniform(-jitter_y, jitter_y)] 
+            for _ in range(4)
+        ])
+        
+        final_corners = corners_placed + jitter
+        
+        final_corners[:, 0] = np.clip(final_corners[:, 0], 0, bg_w - 1)
+        final_corners[:, 1] = np.clip(final_corners[:, 1], 0, bg_h - 1)
+        
+        return np.float32(final_corners)
 
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
         """Generate a single synthetic sample."""
