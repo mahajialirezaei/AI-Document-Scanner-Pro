@@ -253,11 +253,9 @@ class RealEvaluationDataset(Dataset):
         ], dtype=np.float32)
         
         # Compute homography matrix
-        H, _ = cv2.findHomography(corners_scaled.astype(np.float32), dst_points)
-        
+        H, _ = cv2.findHomography(corners_original.astype(np.float32), dst_points)        
         # Apply perspective transform to get rectified crop
-        rectified_crop = cv2.warpPerspective(image_rgb, H, (self.image_size[1], self.image_size[0]))
-        
+        rectified_crop = cv2.warpPerspective(image_rgb, H, (self.image_size[1], self.image_size[0]))        
         # Convert to tensors (CHW, float32, normalized to [0, 1])
         # Raw photo tensor
         raw_photo_tensor = torch.from_numpy(image_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
