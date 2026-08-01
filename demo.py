@@ -257,23 +257,20 @@ def process_single_image(
     # Step 1: Detect corners (preprocess_image expects BGR and does BGR2RGB internally)
     print("  Step 1: Detecting corners...")
     if corner_approach == "heatmap":
-        corners_norm = detect_corners_heatmap(
+        corners_px, _ = detect_corners_heatmap(
             image_bgr,
             corner_model,
             device,
             image_size=image_size,
         )
     else:
-        corners_norm = detect_corners_regression(
+        corners_px, _ = detect_corners_regression(
             image_bgr,
             corner_model,
             device,
             image_size=image_size,
         )
     
-    # Convert to pixel coordinates
-    h, w = original_size
-    corners_px = corners_norm * np.array([w, h])
     corners_ordered = order_corners(corners_px)
     
     print(f"  Corners detected: {corners_ordered.tolist()}")
