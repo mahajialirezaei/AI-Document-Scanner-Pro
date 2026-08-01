@@ -214,7 +214,7 @@ class CornerHeatmapTrainer:
         self.best_val_loss = float('inf')
         self.history = {'train_loss': [], 'val_loss': [], 'lr': []}
     
-    def _generate_target_heatmaps(self, corners, image_size, sigma=5.0):
+    def _generate_target_heatmaps(self, corners, image_size, sigma=15.0):
         B, num_corners, _ = corners.shape
         H, W = image_size
         
