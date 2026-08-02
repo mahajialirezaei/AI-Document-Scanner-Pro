@@ -30,7 +30,7 @@ def load_enhancement_model(checkpoint_path: str, device: str = None) -> torch.nn
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
     model = EnhancementUNet(dropout_rate=0.0)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
     
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
