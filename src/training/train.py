@@ -22,7 +22,9 @@ class EnhancementTrainer:
         self.criterion = EnhancementLoss().to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
+        
+        # Updated to new torch.amp API
+        self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
         
         self.num_epochs = num_epochs
         self.best_val_loss = float('inf')
@@ -38,11 +40,17 @@ class EnhancementTrainer:
             
             self.optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+            # Updated to new torch.amp API
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
                 output = self.model(degraded)
                 loss = self.criterion(output, clean)
             
             self.scaler.scale(loss).backward()
+            
+            # Unscale before Gradient Clipping to prevent Exploding Gradients
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
             self.scaler.step(self.optimizer)
             self.scaler.update()
             
@@ -59,7 +67,7 @@ class EnhancementTrainer:
             degraded = batch['rectified_input'].to(self.device, non_blocking=True)
             clean = batch['clean_target'].to(self.device, non_blocking=True)
             
-            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
                 output = self.model(degraded)
                 loss = self.criterion(output, clean)
                 
@@ -121,7 +129,9 @@ class CornerRegressionTrainer:
         self.criterion = CornerLoss(type=loss_type).to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
+        
+        # Updated API
+        self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
         
         self.num_epochs = num_epochs
         self.best_val_loss = float('inf')
@@ -137,11 +147,16 @@ class CornerRegressionTrainer:
             
             self.optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
                 pred_corners = self.model(image)
                 loss = self.criterion(pred_corners, corners)
                 
             self.scaler.scale(loss).backward()
+            
+            # Gradient Clipping
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
             self.scaler.step(self.optimizer)
             self.scaler.update()
             
@@ -158,7 +173,7 @@ class CornerRegressionTrainer:
             image = batch['raw_photo'].to(self.device, non_blocking=True)
             corners = batch['corners'].view(batch['corners'].size(0), -1).to(self.device, non_blocking=True)
             
-            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
                 pred_corners = self.model(image)
                 loss = self.criterion(pred_corners, corners)
                 
@@ -219,7 +234,9 @@ class CornerHeatmapTrainer:
         self.criterion = HeatmapLoss().to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
+        
+        # Updated API
+        self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
         
         self.num_epochs = num_epochs
         self.best_val_loss = float('inf')
@@ -249,12 +266,17 @@ class CornerHeatmapTrainer:
             
             self.optimizer.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
                 heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
                 _, pred_heatmaps = self.model(image)
                 loss = self.criterion(pred_heatmaps, heatmaps)
                 
             self.scaler.scale(loss).backward()
+            
+            # Gradient Clipping
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
             self.scaler.step(self.optimizer)
             self.scaler.update()
             
@@ -271,7 +293,7 @@ class CornerHeatmapTrainer:
             image = batch['raw_photo'].to(self.device, non_blocking=True)
             corners = batch['corners'].to(self.device, non_blocking=True)
             
-            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
                 heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
                 _, pred_heatmaps = self.model(image)
                 loss = self.criterion(pred_heatmaps, heatmaps)
