@@ -120,13 +120,19 @@ class DegradationPipeline:
         return degraded
     
     def apply_jpeg_compression(self, image: np.ndarray, quality: int = 50) -> np.ndarray:
-        """
-        Simulate JPEG compression artifacts.
-        """
         quality = max(1, min(100, quality))
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-        _, encoded = cv2.imencode('.jpg', image, encode_param)
+        
+        success, encoded = cv2.imencode('.jpg', image, encode_param)
+        if not success:
+            print("\n[Warning] JPEG Encode failed. Bypassing augmentation.")
+            return image
+            
         degraded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if degraded is None:
+            print("\n[Warning] JPEG Decode failed. Bypassing augmentation.")
+            return image
+            
         return degraded
     
     def apply_brightness_change(self, image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
@@ -230,6 +236,15 @@ class DegradationPipeline:
             lambda x: self.apply_shadow(x, num_shadows=random.randint(1, 2)),
             lambda x: self.apply_resolution_loss(x),
         ]
+
+        num_to_apply = min(num_degradations, len(degradation_funcs))
+        selected_funcs = random.sample(degradation_funcs, num_to_apply)
+        
+        degraded = image.copy()
+        for func in selected_funcs:
+            degraded = func(degraded)
+            
+        return degraded
 
 
 def create_degradation_pipeline(seed: Optional[int] = None) -> DegradationPipeline:

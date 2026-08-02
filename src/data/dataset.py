@@ -105,9 +105,6 @@ class SyntheticDocumentDataset(Dataset):
             projected_2d[i, 0] = proj_x + cx
             projected_2d[i, 1] = proj_y + cy
             
-        # projected_2d[:, 0] = np.clip(projected_2d[:, 0], 0, bg_w - 1)
-        # projected_2d[:, 1] = np.clip(projected_2d[:, 1], 0, bg_h - 1)
-        
         return projected_2d
 
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
@@ -165,6 +162,16 @@ class SyntheticDocumentDataset(Dataset):
         flat_pts = np.float32([[0, 0], [self.image_size[1], 0], 
                                [self.image_size[1], self.image_size[0]], [0, self.image_size[0]]])
         H_inv = cv2.getPerspectiveTransform(dst_pts, flat_pts)
+        
+        # --- Fallback Safeguards ---
+        if degraded_composite is None or degraded_composite.size == 0:
+            print("\n[Warning] degraded_composite became None. Reverting to base composite.")
+            degraded_composite = composite.copy()
+            
+        if H_inv is None:
+            print("\n[Critical Warning] H_inv failed. Risk of Gradient Spike in this batch!")
+            H_inv = np.eye(3, dtype=np.float32)
+        # ---------------------------
         
         # Warp-back: rectify the degraded composite to align with clean target
         rectified_degraded = cv2.warpPerspective(degraded_composite, H_inv, 
