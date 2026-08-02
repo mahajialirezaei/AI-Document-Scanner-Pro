@@ -62,7 +62,7 @@ class EnhancementLoss(nn.Module):
         self.text_weight = text_weight
         self.color_weight = color_weight
 
-def forward(self, pred, target):
+    def forward(self, pred, target):
         loss = 0.0
         
         grayscale_target = target.mean(dim=1, keepdim=True)

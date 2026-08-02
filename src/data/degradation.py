@@ -110,29 +110,6 @@ class DegradationPipeline:
         degraded = np.clip(degraded, 0, 255).astype(np.uint8)
         return degraded
     
-    def apply_salt_pepper_noise(self, image: np.ndarray, salt_prob: float = 0.01, pepper_prob: float = 0.01) -> np.ndarray:
-        """
-        Add salt-and-pepper noise to simulate dead pixels or dust.
-        """
-        degraded = image.copy()
-        h, w = degraded.shape[:2]
-        
-        num_salt = int(h * w * salt_prob)
-        coords = [np.random.randint(0, i, num_salt) for i in (h, w)]
-        if len(degraded.shape) == 3:
-            degraded[coords[0], coords[1], :] = 255
-        else:
-            degraded[coords[0], coords[1]] = 255
-        
-        num_pepper = int(h * w * pepper_prob)
-        coords = [np.random.randint(0, i, num_pepper) for i in (h, w)]
-        if len(degraded.shape) == 3:
-            degraded[coords[0], coords[1], :] = 0
-        else:
-            degraded[coords[0], coords[1]] = 0
-        
-        return degraded
-    
     def apply_poisson_noise(self, image: np.ndarray) -> np.ndarray:
         """
         Add Poisson noise to simulate photon shot noise.
@@ -153,33 +130,52 @@ class DegradationPipeline:
         return degraded
     
     def apply_brightness_change(self, image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
-        """
-        Change brightness to simulate varying lighting conditions.
-        """
         if factor is None:
-            factor = random.uniform(0.5, 1.5)
+            factor = random.uniform(0.6, 1.15)
         
         degraded = image.astype(np.float32) * factor
         degraded = np.clip(degraded, 0, 255).astype(np.uint8)
         return degraded
     
     def apply_contrast_change(self, image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
-        """
-        Change contrast to simulate poor lighting conditions.
-        """
         if factor is None:
-            factor = random.uniform(0.5, 1.5)
+            factor = random.uniform(0.7, 1.2)
         
         mean = np.mean(image, axis=(0, 1), keepdims=True)
         degraded = (image - mean) * factor + mean
         degraded = np.clip(degraded, 0, 255).astype(np.uint8)
         return degraded
+
+    def apply_salt_pepper_noise(self, image: np.ndarray, salt_prob: float = 0.003, pepper_prob: float = 0.003) -> np.ndarray:
+        """
+        Add salt-and-pepper noise to simulate dead pixels or dust.
+        Probabilities reduced to prevent structural text damage.
+        """
+        degraded = image.copy()
+        h, w = degraded.shape[:2]
+        
+        num_salt = int(h * w * salt_prob)
+        coords = [np.random.randint(0, i, num_salt) for i in (h, w)]
+        if len(degraded.shape) == 3:
+            degraded[coords[0], coords[1], :] = 255
+        else:
+            degraded[coords[0], coords[1]] = 255
+        
+        num_pepper = int(h * w * pepper_prob)
+        coords = [np.random.randint(0, i, num_pepper) for i in (h, w)]
+        if len(degraded.shape) == 3:
+            degraded[coords[0], coords[1], :] = 0
+        else:
+            degraded[coords[0], coords[1]] = 0
+        
+        return degraded
+
     
     def apply_shadow(self, image: np.ndarray, num_shadows: int = 1) -> np.ndarray:
         """
-        Add shadow effects to simulate uneven lighting.
+        Add soft shadow effects to simulate uneven lighting.
         """
-        degraded = image.copy()
+        degraded = image.copy().astype(np.float32)
         h, w = degraded.shape[:2]
         
         for _ in range(num_shadows):
@@ -188,22 +184,20 @@ class DegradationPipeline:
             points[:, 0] = np.clip(points[:, 0], 0, w - 1)
             points[:, 1] = np.clip(points[:, 1], 0, h - 1)
             
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.fillPoly(mask, [points], 255)
+            mask = np.zeros((h, w), dtype=np.float32)
+            cv2.fillPoly(mask, [points], 1.0)
             
-            shadow_intensity = random.uniform(0.3, 0.7)
+            mask = cv2.GaussianBlur(mask, (151, 151), 0)
+            
+            shadow_intensity = random.uniform(0.6, 0.85)
+            
             if len(degraded.shape) == 3:
                 for c in range(degraded.shape[2]):
-                    degraded[:, :, c] = np.where(mask > 0, 
-                                                  degraded[:, :, c] * shadow_intensity, 
-                                                  degraded[:, :, c])
+                    degraded[:, :, c] = degraded[:, :, c] * (1.0 - mask * (1.0 - shadow_intensity))
             else:
-                degraded = np.where(mask > 0, 
-                                    degraded * shadow_intensity, 
-                                    degraded)
+                degraded = degraded * (1.0 - mask * (1.0 - shadow_intensity))
         
-        degraded = np.clip(degraded, 0, 255).astype(np.uint8)
-        return degraded
+        return np.clip(degraded, 0, 255).astype(np.uint8)
     
     def apply_resolution_loss(self, image: np.ndarray, scale_factor: Optional[float] = None) -> np.ndarray:
         """

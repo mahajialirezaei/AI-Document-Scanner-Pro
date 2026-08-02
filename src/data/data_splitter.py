@@ -2,7 +2,7 @@ import random
 from pathlib import Path
 from src.data.dataset import SyntheticDocumentDataset
 
-def get_synthetic_splits(clean_scans_dir, backgrounds_dir, image_size=(256, 256), seed=42, num_eval_samples=50, train_samples_per_epoch=4000):
+def get_synthetic_splits(clean_scans_dir, backgrounds_dir, image_size=(512, 512), seed=42, num_eval_samples=50, train_samples_per_epoch=4000):
     clean_scans = sorted([str(p) for p in Path(clean_scans_dir).glob("*.jpg")])
     
     random.seed(seed)
