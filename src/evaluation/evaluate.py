@@ -294,12 +294,17 @@ class OCREvaluator:
         """
         try:
             import pytesseract
+            
+            pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+            
+            os.environ['TESSDATA_PREFIX'] = r'C:\Program Files\Tesseract-OCR\tessdata'
+            
             self.pytesseract = pytesseract
             self.available = True
-        except ImportError:
+        except (ImportError, Exception):
             self.available = False
-            print("Warning: pytesseract not installed. Install with: pip install pytesseract")
-        
+            print("Warning: pytesseract or Tesseract engine not available.")
+            
         self.lang = lang
     
     def extract_text_with_confidence(self, image: np.ndarray) -> Dict[str, any]:
