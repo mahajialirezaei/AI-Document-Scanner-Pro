@@ -359,7 +359,8 @@ if __name__ == '__main__':
     
     from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel, init_weights
     from src.data.data_splitter import get_synthetic_splits
-
+    
+    torch.autograd.set_detect_anomaly(True)
     parser = argparse.ArgumentParser(description="Train Document Scanning Models (Phases 3 & 4)")
     
     parser.add_argument("--task", type=str, required=True, 
