@@ -39,56 +39,76 @@ class SyntheticDocumentDataset(Dataset):
         self.image_size = image_size
         self.use_degradation = use_degradation
         self.freeze_data = freeze_data
+        self.num_samples = num_samples
         
         self.degradation_pipeline = create_degradation_pipeline(seed=seed) if use_degradation else None
         
-        # Set seeds for reproducibility
         if seed is not None:
             np.random.seed(seed)
             random.seed(seed)
         
-        # Pre-generate and cache data for validation/test sets
         self._cached_data = None
         if freeze_data:
             self._cache_all_samples(num_samples)
 
     def _generate_random_corners(self, bg_w: int, bg_h: int) -> np.ndarray:
-        """Generate 4 random corner points with random scale, rotation, and perspective."""
-        scale = random.uniform(0.40, 0.95)
+        """Generate 4 corners using 3D perspective projection (Pitch, Yaw, Roll)."""
+        scale = random.uniform(0.5, 0.85)
         doc_w = bg_w * scale
         doc_h = bg_h * scale
+        
+        corners_3d = np.array([
+            [-doc_w/2, -doc_h/2, 0],
+            [ doc_w/2, -doc_h/2, 0],
+            [ doc_w/2,  doc_h/2, 0],
+            [-doc_w/2,  doc_h/2, 0]
+        ], dtype=np.float32)
+        
+        pitch = np.radians(random.uniform(-45, 45))
+        yaw = np.radians(random.uniform(-35, 35))
+        roll = np.radians(random.uniform(-15, 15))
+        
+        Rx = np.array([
+            [1, 0, 0],
+            [0, np.cos(pitch), -np.sin(pitch)],
+            [0, np.sin(pitch), np.cos(pitch)]
+        ])
+        Ry = np.array([
+            [np.cos(yaw), 0, np.sin(yaw)],
+            [0, 1, 0],
+            [-np.sin(yaw), 0, np.cos(yaw)]
+        ])
+        Rz = np.array([
+            [np.cos(roll), -np.sin(roll), 0],
+            [np.sin(roll), np.cos(roll), 0],
+            [0, 0, 1]
+        ])
+        
+        R = Rz @ Ry @ Rx
+        rotated_3d = corners_3d @ R.T
+        
+        z_distance = random.uniform(doc_w * 1.0, doc_w * 2.5)
         
         cx = random.uniform(doc_w / 2, bg_w - (doc_w / 2))
         cy = random.uniform(doc_h / 2, bg_h - (doc_h / 2))
         
-        corners = np.array([
-            [-doc_w/2, -doc_h/2],
-            [ doc_w/2, -doc_h/2],
-            [ doc_w/2,  doc_h/2],
-            [-doc_w/2,  doc_h/2]
-        ])
+        focal_length = z_distance
         
-        angle = random.uniform(-15, 15)
-        theta = np.radians(angle)
-        c, s = np.cos(theta), np.sin(theta)
-        R = np.array(((c, -s), (s, c)))
-        rotated_corners = np.dot(corners, R.T)
+        projected_2d = np.zeros((4, 2), dtype=np.float32)
+        for i in range(4):
+            x, y, z = rotated_3d[i]
+            z_translated = z + z_distance
+            
+            proj_x = x * (focal_length / z_translated)
+            proj_y = y * (focal_length / z_translated)
+            
+            projected_2d[i, 0] = proj_x + cx
+            projected_2d[i, 1] = proj_y + cy
+            
+        projected_2d[:, 0] = np.clip(projected_2d[:, 0], 0, bg_w - 1)
+        projected_2d[:, 1] = np.clip(projected_2d[:, 1], 0, bg_h - 1)
         
-        corners_placed = rotated_corners + np.array([cx, cy])
-        
-        jitter_x = doc_w * 0.10
-        jitter_y = doc_h * 0.10
-        jitter = np.array([
-            [random.uniform(-jitter_x, jitter_x), random.uniform(-jitter_y, jitter_y)] 
-            for _ in range(4)
-        ])
-        
-        final_corners = corners_placed + jitter
-        
-        final_corners[:, 0] = np.clip(final_corners[:, 0], 0, bg_w - 1)
-        final_corners[:, 1] = np.clip(final_corners[:, 1], 0, bg_h - 1)
-        
-        return np.float32(final_corners)
+        return projected_2d
 
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
         """Generate a single synthetic sample."""
@@ -185,6 +205,8 @@ class SyntheticDocumentDataset(Dataset):
     def __len__(self) -> int:
         if self.freeze_data and self._cached_data is not None:
             return len(self._cached_data)
+        if self.num_samples is not None:
+            return self.num_samples
         return len(self.clean_scans)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
