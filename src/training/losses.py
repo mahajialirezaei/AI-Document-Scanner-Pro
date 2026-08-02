@@ -52,56 +52,48 @@ class SobelLoss(nn.Module):
 
 
 class EnhancementLoss(nn.Module):
-    def __init__(self, l1_weight=1.0, edge_weight=0.5, ssim_weight=0.5, text_weight=50.0, color_weight=1.5):
+    def __init__(self, l1_weight=1.0, edge_weight=0.5, ssim_weight=1.0, text_weight=15.0, color_weight=0.2):
         super().__init__()
         self.sobel = SobelLoss()
         self.l1_weight = l1_weight
         self.edge_weight = edge_weight
         self.ssim_weight = ssim_weight
         
-        # Hyperparameters for resolving Bleaching and Color Artifacts
         self.text_weight = text_weight
         self.color_weight = color_weight
 
     def forward(self, pred, target):
         loss = 0.0
         
-        # 1. Masked L1 Loss (Anti-Bleaching Implementation)
         grayscale_target = target.mean(dim=1, keepdim=True)
         
-        # Exponential function to sharply isolate dark pixels (Ink) and apply high penalty
-        weight_map = 1.0 + self.text_weight * torch.exp(-10.0 * grayscale_target)
+
+        weight_map = 1.0 + self.text_weight * torch.pow(1.0 - grayscale_target, 3)
         
         l1_error = torch.abs(pred - target)
         weighted_l1 = (l1_error * weight_map).mean()
         
         loss += self.l1_weight * weighted_l1
         
-        # 2. Edge Loss
         if self.edge_weight > 0:
             pred_edge = self.sobel(pred)
             target_edge = self.sobel(target)
             edge_error = torch.abs(pred_edge - target_edge).mean()
             loss += self.edge_weight * edge_error
         
-        # 3. SSIM Loss
         if self.ssim_weight > 0:
             ssim_loss = 1 - compute_ssim(pred, target)
             loss += self.ssim_weight * ssim_loss
             
-        # 4. Color Consistency Loss (Anti-Color Artifacts Implementation)
         if self.color_weight > 0 and pred.shape[1] == 3:
-            # Calculate cross-channel differences for prediction
             rg_diff_pred = pred[:, 0, :, :] - pred[:, 1, :, :]
             rb_diff_pred = pred[:, 0, :, :] - pred[:, 2, :, :]
             gb_diff_pred = pred[:, 1, :, :] - pred[:, 2, :, :]
             
-            # Calculate cross-channel differences for target
             rg_diff_target = target[:, 0, :, :] - target[:, 1, :, :]
             rb_diff_target = target[:, 0, :, :] - target[:, 2, :, :]
             gb_diff_target = target[:, 1, :, :] - target[:, 2, :, :]
             
-            # Penalize the divergence in color balance
             color_loss = torch.abs(rg_diff_pred - rg_diff_target).mean() + \
                          torch.abs(rb_diff_pred - rb_diff_target).mean() + \
                          torch.abs(gb_diff_pred - gb_diff_target).mean()
