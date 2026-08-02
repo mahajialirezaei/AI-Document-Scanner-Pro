@@ -357,7 +357,7 @@ if __name__ == '__main__':
     import argparse
     import sys
     
-    from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
+    from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel, init_weights
     from src.data.data_splitter import get_synthetic_splits
 
     parser = argparse.ArgumentParser(description="Train Document Scanning Models (Phases 3 & 4)")
@@ -404,7 +404,6 @@ if __name__ == '__main__':
         print("Please ensure 'data/clean_scans' and 'data/random_backgrounds' directories exist and contain images.")
         sys.exit(1)
 
-    # Added pin_memory=True for faster CPU to GPU data transfer
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True, pin_memory=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
@@ -418,7 +417,9 @@ if __name__ == '__main__':
     else:
         raise ValueError("Invalid task")
 
-    # Wrap model with DataParallel if multiple GPUs are available
+    # Apply Kaiming Normal Weight Initialization
+    model.apply(init_weights)
+
     if torch.cuda.device_count() > 1:
         print(f"Wrapping model in DataParallel using {torch.cuda.device_count()} GPUs.")
         model = nn.DataParallel(model)
