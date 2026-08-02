@@ -4,18 +4,18 @@ import torch.nn.functional as F
 
 def compute_ssim(x: torch.Tensor, y: torch.Tensor, window_size: int = 11) -> torch.Tensor:
     """
-    Compute Structural Similarity Index (SSIM) between two images.
+    Compute Structural Similarity Index (SSIM) between two images with numerical stability.
     """
     C1 = 0.01 ** 2
     C2 = 0.03 ** 2
     
     def create_window(window_size: int, sigma: float = 1.5) -> torch.Tensor:
-        coords = torch.arange(window_size, dtype=torch.float32) - window_size // 2
+        coords = torch.arange(window_size, dtype=torch.float32, device=x.device) - window_size // 2
         gaussian = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
         window = gaussian / gaussian.sum()
         return window.view(1, 1, -1, 1) * window.view(1, 1, 1, -1)
     
-    window = create_window(window_size).to(x.device)
+    window = create_window(window_size)
     window = window.repeat(x.shape[1], 1, 1, 1)
     
     mu_x = F.conv2d(x, window, padding=window_size // 2, groups=x.shape[1])
@@ -29,8 +29,14 @@ def compute_ssim(x: torch.Tensor, y: torch.Tensor, window_size: int = 11) -> tor
     sigma_y_sq = F.conv2d(y ** 2, window, padding=window_size // 2, groups=y.shape[1]) - mu_y_sq
     sigma_xy = F.conv2d(x * y, window, padding=window_size // 2, groups=x.shape[1]) - mu_xy
     
-    ssim_map = ((2 * mu_xy + C1) * (2 * sigma_xy + C2)) / \
-               ((mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2))
+    # Clamp variances to prevent negative values due to floating point inaccuracies
+    sigma_x_sq = torch.clamp(sigma_x_sq, min=0.0)
+    sigma_y_sq = torch.clamp(sigma_y_sq, min=0.0)
+    
+    numerator = (2 * mu_xy + C1) * (2 * sigma_xy + C2)
+    denominator = (mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2)
+    
+    ssim_map = numerator / (denominator + 1e-8)
     
     return ssim_map.mean()
 
@@ -47,7 +53,8 @@ class SobelLoss(nn.Module):
         x = x.mean(dim=1, keepdim=True)
         grad_x = F.conv2d(x, self.kernel_x, padding=1)
         grad_y = F.conv2d(x, self.kernel_y, padding=1)
-        grad = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
+        # Using clamp and stable hypot to prevent NaN gradients at zero
+        grad = torch.sqrt(torch.clamp(grad_x**2 + grad_y**2, min=1e-8))
         return grad
 
 
@@ -58,16 +65,18 @@ class EnhancementLoss(nn.Module):
         self.l1_weight = l1_weight
         self.edge_weight = edge_weight
         self.ssim_weight = ssim_weight
-        
         self.text_weight = text_weight
         self.color_weight = color_weight
 
     def forward(self, pred, target):
         loss = 0.0
         
-        grayscale_target = target.mean(dim=1, keepdim=True)
+        # Ensure inputs are safely clamped
+        pred = torch.clamp(pred, 0.0, 1.0)
+        target = torch.clamp(target, 0.0, 1.0)
         
-        weight_map = 1.0 + (4.0 * torch.pow(1.0 - grayscale_target, 3))
+        grayscale_target = target.mean(dim=1, keepdim=True)
+        weight_map = 1.0 + (self.text_weight * torch.pow(torch.clamp(1.0 - grayscale_target, min=0.0), 3))
         
         l1_error = F.smooth_l1_loss(pred, target, reduction='none', beta=0.1)
         weighted_l1 = (l1_error * weight_map).mean()
@@ -81,7 +90,7 @@ class EnhancementLoss(nn.Module):
             loss += self.edge_weight * edge_error
         
         if self.ssim_weight > 0:
-            ssim_loss = 1 - compute_ssim(pred, target)
+            ssim_loss = 1.0 - compute_ssim(pred, target)
             loss += self.ssim_weight * ssim_loss
             
         if self.color_weight > 0 and pred.shape[1] == 3:
