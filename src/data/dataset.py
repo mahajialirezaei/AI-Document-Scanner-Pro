@@ -1,11 +1,12 @@
 import os
 import json
+import re
 import cv2
 import numpy as np
 import torch
 import random
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any, Callable
+from typing import Dict, List, Tuple, Optional, Any
 from torch.utils.data import Dataset, DataLoader
 from .degradation import create_degradation_pipeline
 
@@ -198,102 +199,97 @@ class SyntheticDocumentDataset(Dataset):
         # For training, generate fresh sample on-the-fly
         return self._generate_single_sample(idx)
 
-class RealEvaluationDataset(Dataset):
+
+class RealDocumentDataset(Dataset):
     """
-    Dataset for evaluating real document photos.
+    Dataset for real document photos and their corresponding reference scans.
     
-    Provides:
-    1. Raw photo with scaled corner coordinates (for corner detector evaluation)
-    2. Rectified crop using ground-truth annotated corners (for enhancement network evaluation)
+    Reads COCO annotations, maps raw photos to clean scans, and outputs:
+    - raw_photo: Tensor (C, H, W) [The degraded input]
+    - clean_target: Tensor (C, H, W) [The clean reference scan]
+    - corners: Tensor (4, 2) normalized to [0, 1]
     """
     
     def __init__(self, 
-                 real_photos_dir: str, 
+                 real_photos_dir: str,
+                 scanned_photos_dir: str,
                  annotation_file: str, 
                  image_size: Tuple[int, int] = (512, 512)):
         
-        self.root_dir = real_photos_dir
+        self.real_photos_dir = real_photos_dir
+        self.scanned_photos_dir = scanned_photos_dir
         self.image_size = image_size
         
         with open(annotation_file, 'r') as f:
-            self.annotations = json.load(f)
+            self.annotations_data = json.load(f)
             
-        self.images_info = {img['id']: img for img in self.annotations['images']}
-        self.image_ids = list(self.images_info.keys())
-        
-        self.annotations_by_image = {}
-        for ann in self.annotations['annotations']:
+        annotations_by_image = {}
+        for ann in self.annotations_data.get('annotations', []):
             img_id = ann['image_id']
-            if img_id not in self.annotations_by_image:
-                self.annotations_by_image[img_id] = []
-            self.annotations_by_image[img_id].append(ann)
+            if img_id not in annotations_by_image:
+                annotations_by_image[img_id] = []
+            annotations_by_image[img_id].append(ann)
+
+        self.valid_data = []
+        
+        for img_info in self.annotations_data.get('images', []):
+            file_name = img_info['file_name']
+            img_id = img_info['id']
+            
+            match = re.search(r'^(\d+)_', file_name)
+            if not match:
+                continue
+                
+            doc_number = match.group(1)
+            scan_file_name = f"{doc_number}.jpg"
+            
+            raw_path = os.path.join(self.real_photos_dir, file_name)
+            scan_path = os.path.join(self.scanned_photos_dir, scan_file_name)
+            
+            if os.path.exists(raw_path) and os.path.exists(scan_path) and img_id in annotations_by_image:
+                ann = annotations_by_image[img_id][0]
+                
+                if 'segmentation' in ann and len(ann['segmentation']) > 0:
+                    self.valid_data.append({
+                        'raw_path': raw_path,
+                        'scan_path': scan_path,
+                        'segmentation': ann['segmentation'][0],
+                        'original_w': img_info['width'],
+                        'original_h': img_info['height']
+                    })
 
     def __len__(self) -> int:
-        return len(self.image_ids)
+        return len(self.valid_data)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        image_id = self.image_ids[idx]
-        img_info = self.images_info[image_id]
+        data = self.valid_data[idx]
         
-        # Read image and convert to RGB
-        filepath = os.path.join(self.root_dir, img_info['file_name'])
-        image_bgr = cv2.imread(filepath)
-        if image_bgr is None:
-            raise ValueError(f"Failed to load image: {filepath}")
+        raw_bgr = cv2.imread(data['raw_path'])
+        scan_bgr = cv2.imread(data['scan_path'])
         
-        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        original_h, original_w = image_rgb.shape[:2]
+        if raw_bgr is None or scan_bgr is None:
+            raise ValueError(f"Failed to load image pair for index {idx}")
+            
+        raw_rgb = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2RGB)
+        scan_rgb = cv2.cvtColor(scan_bgr, cv2.COLOR_BGR2RGB)
         
-        # Extract ground-truth corners from COCO annotations
-        ann = self.annotations_by_image.get(image_id, [{}])[0]
-        keypoints = ann.get('keypoints', [0]*12)
+        original_h, original_w = raw_rgb.shape[:2]
         
-        # Extract 4 corners (x, y) from keypoints
-        corners_original = np.zeros((4, 2), dtype=np.float32)
-        for i in range(4):
-            corners_original[i, 0] = keypoints[i * 3]      # x
-            corners_original[i, 1] = keypoints[i * 3 + 1]  # y
+        corners_original = np.array(data['segmentation'], dtype=np.float32).reshape(4, 2)
         
-        # Scale image to self.image_size
-        image_resized = cv2.resize(image_rgb, (self.image_size[1], self.image_size[0]))
+        corners_norm = corners_original.copy()
+        corners_norm[:, 0] /= original_w
+        corners_norm[:, 1] /= original_h
         
-        # Scale corners proportionally
-        scale_x = self.image_size[1] / original_w
-        scale_y = self.image_size[0] / original_h
+        raw_resized = cv2.resize(raw_rgb, (self.image_size[1], self.image_size[0]))
+        scan_resized = cv2.resize(scan_rgb, (self.image_size[1], self.image_size[0]))
         
-        corners_scaled = corners_original.copy()
-        corners_scaled[:, 0] *= scale_x
-        corners_scaled[:, 1] *= scale_y
-        
-        # Normalize corners to [0, 1]
-        corners_norm = corners_scaled.copy()
-        corners_norm[:, 0] /= self.image_size[1]
-        corners_norm[:, 1] /= self.image_size[0]
-        
-        # Create rectified crop using ground-truth corners
-        # Define destination points for perspective transform
-        dst_points = np.array([
-            [0, 0],
-            [self.image_size[1] - 1, 0],
-            [self.image_size[1] - 1, self.image_size[0] - 1],
-            [0, self.image_size[0] - 1]
-        ], dtype=np.float32)
-        
-        # Compute homography matrix
-        H, _ = cv2.findHomography(corners_original.astype(np.float32), dst_points)        
-        # Apply perspective transform to get rectified crop
-        rectified_crop = cv2.warpPerspective(image_rgb, H, (self.image_size[1], self.image_size[0]))        
-        # Convert to tensors (CHW, float32, normalized to [0, 1])
-        # Raw photo tensor
-        raw_photo_tensor = torch.from_numpy(image_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
-        
-        # Rectified input tensor
-        rectified_tensor = torch.from_numpy(rectified_crop.astype(np.float32) / 255.0).permute(2, 0, 1)
+        raw_tensor = torch.from_numpy(raw_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
+        scan_tensor = torch.from_numpy(scan_resized.astype(np.float32) / 255.0).permute(2, 0, 1)
+        corners_tensor = torch.from_numpy(corners_norm)
         
         return {
-            'raw_photo': raw_photo_tensor,
-            'corners': torch.from_numpy(corners_norm),
-            'rectified_input': rectified_tensor,
-            'original_shape': (original_h, original_w),
-            'filename': img_info['file_name']
+            'raw_photo': raw_tensor,       
+            'clean_target': scan_tensor,   
+            'corners': corners_tensor      
         }
