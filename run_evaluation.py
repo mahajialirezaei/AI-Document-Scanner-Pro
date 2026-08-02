@@ -58,7 +58,7 @@ def main():
     model = EnhancementUNet(dropout_rate=0.0).to(device)
     
     try:
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint['model_state_dict'] if 'model_state_dict' in checkpoint else checkpoint)
         print(f"Model loaded successfully from {model_path}")
     except FileNotFoundError:
