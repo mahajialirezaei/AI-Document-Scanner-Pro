@@ -4,6 +4,10 @@ import logging
 import argparse
 from pathlib import Path
 from typing import List
+import cv2
+
+# Prevent OpenCV from spawning internal threads that deadlock with PyTorch
+cv2.setNumThreads(0)
 
 import torch
 import torch.nn as nn
@@ -80,6 +84,8 @@ class RegularizedEnhancementTrainer:
     def train_epoch(self):
         self.model.train()
         total_loss = 0.0
+        
+        # tqdm removed to match train.py logic and prevent Windows PowerShell buffer blocks
         for batch in self.train_loader:
             degraded = batch['rectified_input'].to(self.device, non_blocking=True)
             clean = batch['clean_target'].to(self.device, non_blocking=True)
@@ -96,6 +102,7 @@ class RegularizedEnhancementTrainer:
             self.scaler.update()
             
             total_loss += loss.item() * degraded.size(0)
+            
         return total_loss / len(self.train_loader.dataset)
 
     @torch.no_grad()
@@ -161,11 +168,13 @@ if __name__ == '__main__':
         backgrounds_dir=args.backgrounds,
         image_size=(args.image_size, args.image_size),
         seed=42,
-        num_eval_samples=100
+        num_eval_samples=50,
+        train_samples_per_epoch=40 
     )
     
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    # num_workers set to 0 to prevent fork/spawn deadlocks on Windows
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=False, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=False)
 
     model = EnhancementUNet(dropout_rate=0.0) 
     model.apply(init_weights)
