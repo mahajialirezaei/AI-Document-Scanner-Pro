@@ -62,15 +62,14 @@ class EnhancementLoss(nn.Module):
         self.text_weight = text_weight
         self.color_weight = color_weight
 
-    def forward(self, pred, target):
+def forward(self, pred, target):
         loss = 0.0
         
         grayscale_target = target.mean(dim=1, keepdim=True)
         
-
-        weight_map = 1.0 + self.text_weight * torch.pow(1.0 - grayscale_target, 3)
+        weight_map = 1.0 + (4.0 * torch.pow(1.0 - grayscale_target, 3))
         
-        l1_error = torch.abs(pred - target)
+        l1_error = F.smooth_l1_loss(pred, target, reduction='none', beta=0.1)
         weighted_l1 = (l1_error * weight_map).mean()
         
         loss += self.l1_weight * weighted_l1
@@ -78,7 +77,7 @@ class EnhancementLoss(nn.Module):
         if self.edge_weight > 0:
             pred_edge = self.sobel(pred)
             target_edge = self.sobel(target)
-            edge_error = torch.abs(pred_edge - target_edge).mean()
+            edge_error = F.smooth_l1_loss(pred_edge, target_edge, beta=0.1).mean()
             loss += self.edge_weight * edge_error
         
         if self.ssim_weight > 0:
@@ -94,9 +93,9 @@ class EnhancementLoss(nn.Module):
             rb_diff_target = target[:, 0, :, :] - target[:, 2, :, :]
             gb_diff_target = target[:, 1, :, :] - target[:, 2, :, :]
             
-            color_loss = torch.abs(rg_diff_pred - rg_diff_target).mean() + \
-                         torch.abs(rb_diff_pred - rb_diff_target).mean() + \
-                         torch.abs(gb_diff_pred - gb_diff_target).mean()
+            color_loss = F.smooth_l1_loss(rg_diff_pred, rg_diff_target) + \
+                         F.smooth_l1_loss(rb_diff_pred, rb_diff_target) + \
+                         F.smooth_l1_loss(gb_diff_pred, gb_diff_target)
                          
             loss += self.color_weight * color_loss
         
