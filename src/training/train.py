@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 class EnhancementTrainer:
-    """Training loop for document enhancement U-Net model."""
+    """Training loop for document enhancement U-Net model with AMP and DataParallel."""
     
     def __init__(self, model, train_loader, val_loader, device, save_dir='checkpoints/enhancement',
                  lr=1e-3, l1_weight=1.0, edge_weight=0.1, num_epochs=100):
@@ -18,11 +18,11 @@ class EnhancementTrainer:
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         
-        # Loss and optimizer
         from .losses import EnhancementLoss
         self.criterion = EnhancementLoss().to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
         
         self.num_epochs = num_epochs
         self.best_val_loss = float('inf')
@@ -33,14 +33,18 @@ class EnhancementTrainer:
         total_loss = 0.0
         
         for batch in self.train_loader:
-            degraded = batch['rectified_input'].to(self.device)
-            clean = batch['clean_target'].to(self.device)
+            degraded = batch['rectified_input'].to(self.device, non_blocking=True)
+            clean = batch['clean_target'].to(self.device, non_blocking=True)
             
-            self.optimizer.zero_grad()
-            output = self.model(degraded)
-            loss = self.criterion(output, clean)
-            loss.backward()
-            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+                output = self.model(degraded)
+                loss = self.criterion(output, clean)
+            
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             
             total_loss += loss.item() * degraded.size(0)
         
@@ -52,11 +56,13 @@ class EnhancementTrainer:
         total_loss = 0.0
         
         for batch in self.val_loader:
-            degraded = batch['rectified_input'].to(self.device)
-            clean = batch['clean_target'].to(self.device)
+            degraded = batch['rectified_input'].to(self.device, non_blocking=True)
+            clean = batch['clean_target'].to(self.device, non_blocking=True)
             
-            output = self.model(degraded)
-            loss = self.criterion(output, clean)
+            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+                output = self.model(degraded)
+                loss = self.criterion(output, clean)
+                
             total_loss += loss.item() * degraded.size(0)
         
         return total_loss / len(self.val_loader.dataset)
@@ -80,12 +86,13 @@ class EnhancementTrainer:
             
             elapsed = time.time() - start_time
             
-            # Save best model
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                # Save unwrapped model state dict if using DataParallel
+                model_state = self.model.module.state_dict() if isinstance(self.model, nn.DataParallel) else self.model.state_dict()
                 torch.save({
                     'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
+                    'model_state_dict': model_state,
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'val_loss': val_loss,
                 }, self.save_dir / 'best_model.pth')
@@ -99,7 +106,7 @@ class EnhancementTrainer:
 
 
 class CornerRegressionTrainer:
-    """Training loop for corner detection using direct regression (Approach A)."""
+    """Training loop for corner detection using direct regression with AMP."""
     
     def __init__(self, model, train_loader, val_loader, device, save_dir='checkpoints/corner_regression',
                  lr=1e-3, loss_type='l1', num_epochs=100):
@@ -110,11 +117,11 @@ class CornerRegressionTrainer:
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         
-        # Loss and optimizer
         from .losses import CornerLoss
         self.criterion = CornerLoss(type=loss_type).to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
         
         self.num_epochs = num_epochs
         self.best_val_loss = float('inf')
@@ -125,16 +132,18 @@ class CornerRegressionTrainer:
         total_loss = 0.0
         
         for batch in self.train_loader:
-            # تغییر کلید استخراج تصویر
-            image = batch['raw_photo'].to(self.device)
-            # شبکه رگرسیون انتظار دارد مختصات به صورت یک تنسور فلت شده (B, 8) باشد
-            corners = batch['corners'].view(batch['corners'].size(0), -1).to(self.device)
+            image = batch['raw_photo'].to(self.device, non_blocking=True)
+            corners = batch['corners'].view(batch['corners'].size(0), -1).to(self.device, non_blocking=True)
             
-            self.optimizer.zero_grad()
-            pred_corners = self.model(image)
-            loss = self.criterion(pred_corners, corners)
-            loss.backward()
-            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+                pred_corners = self.model(image)
+                loss = self.criterion(pred_corners, corners)
+                
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             
             total_loss += loss.item() * image.size(0)
         
@@ -146,11 +155,13 @@ class CornerRegressionTrainer:
         total_loss = 0.0
         
         for batch in self.val_loader:
-            image = batch['raw_photo'].to(self.device)
-            corners = batch['corners'].view(batch['corners'].size(0), -1).to(self.device)
+            image = batch['raw_photo'].to(self.device, non_blocking=True)
+            corners = batch['corners'].view(batch['corners'].size(0), -1).to(self.device, non_blocking=True)
             
-            pred_corners = self.model(image)
-            loss = self.criterion(pred_corners, corners)
+            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+                pred_corners = self.model(image)
+                loss = self.criterion(pred_corners, corners)
+                
             total_loss += loss.item() * image.size(0)
         
         return total_loss / len(self.val_loader.dataset)
@@ -174,12 +185,12 @@ class CornerRegressionTrainer:
             
             elapsed = time.time() - start_time
             
-            # Save best model
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                model_state = self.model.module.state_dict() if isinstance(self.model, nn.DataParallel) else self.model.state_dict()
                 torch.save({
                     'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
+                    'model_state_dict': model_state,
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'val_loss': val_loss,
                 }, self.save_dir / 'best_model.pth')
@@ -193,7 +204,7 @@ class CornerRegressionTrainer:
 
 
 class CornerHeatmapTrainer:
-    """Training loop for corner detection using heatmaps (Approach B)."""
+    """Training loop for corner detection using heatmaps with AMP."""
     
     def __init__(self, model, train_loader, val_loader, device, save_dir='checkpoints/corner_heatmap',
                  lr=1e-3, num_epochs=100):
@@ -204,11 +215,11 @@ class CornerHeatmapTrainer:
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         
-        # Loss and optimizer
         from .losses import HeatmapLoss
         self.criterion = HeatmapLoss().to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=device.type == 'cuda')
         
         self.num_epochs = num_epochs
         self.best_val_loss = float('inf')
@@ -233,18 +244,19 @@ class CornerHeatmapTrainer:
         total_loss = 0.0
         
         for batch in self.train_loader:
-            image = batch['raw_photo'].to(self.device)
-            corners = batch['corners'].to(self.device)
+            image = batch['raw_photo'].to(self.device, non_blocking=True)
+            corners = batch['corners'].to(self.device, non_blocking=True)
             
-            heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
+            self.optimizer.zero_grad(set_to_none=True)
             
-            self.optimizer.zero_grad()
-            
-            _, pred_heatmaps = self.model(image)
-            
-            loss = self.criterion(pred_heatmaps, heatmaps)
-            loss.backward()
-            self.optimizer.step()
+            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+                heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
+                _, pred_heatmaps = self.model(image)
+                loss = self.criterion(pred_heatmaps, heatmaps)
+                
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
             
             total_loss += loss.item() * image.size(0)
         
@@ -256,17 +268,18 @@ class CornerHeatmapTrainer:
         total_loss = 0.0
         
         for batch in self.val_loader:
-            image = batch['raw_photo'].to(self.device)
-            corners = batch['corners'].to(self.device)
+            image = batch['raw_photo'].to(self.device, non_blocking=True)
+            corners = batch['corners'].to(self.device, non_blocking=True)
             
-            heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
-            
-            _, pred_heatmaps = self.model(image)
-            
-            loss = self.criterion(pred_heatmaps, heatmaps)
+            with torch.cuda.amp.autocast(enabled=self.device.type == 'cuda'):
+                heatmaps = self._generate_target_heatmaps(corners, image.shape[2:])
+                _, pred_heatmaps = self.model(image)
+                loss = self.criterion(pred_heatmaps, heatmaps)
+                
             total_loss += loss.item() * image.size(0)
         
         return total_loss / len(self.val_loader.dataset)
+        
     def train(self):
         print(f"Starting corner heatmap training for {self.num_epochs} epochs...")
         print(f"Save directory: {self.save_dir}")
@@ -286,12 +299,12 @@ class CornerHeatmapTrainer:
             
             elapsed = time.time() - start_time
             
-            # Save best model
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                model_state = self.model.module.state_dict() if isinstance(self.model, nn.DataParallel) else self.model.state_dict()
                 torch.save({
                     'epoch': epoch,
-                    'model_state_dict': self.model.state_dict(),
+                    'model_state_dict': model_state,
                     'optimizer_state_dict': self.optimizer.state_dict(),
                     'val_loss': val_loss,
                 }, self.save_dir / 'best_model.pth')
@@ -318,12 +331,9 @@ def create_trainer(trainer_type, model, train_loader, val_loader, device, **kwar
     return trainers[trainer_type](model, train_loader, val_loader, device, **kwargs)
 
 
-
-
 if __name__ == '__main__':
     import argparse
     import sys
-    from torch.utils.data import DataLoader
     
     from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
     from src.data.data_splitter import get_synthetic_splits
@@ -348,10 +358,16 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    # Hardware Optimization: Enable CUDNN Benchmark
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    
+    if device.type == 'cuda':
+        print(f"Number of GPUs available: {torch.cuda.device_count()}")
 
-    # 1. Prepare Synthetic Data
     print("Preparing Synthetic Dataset Splits...")
     try:
         train_ds, val_ds, test_ds = get_synthetic_splits(
@@ -366,10 +382,10 @@ if __name__ == '__main__':
         print("Please ensure 'data/clean_scans' and 'data/random_backgrounds' directories exist and contain images.")
         sys.exit(1)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8)
+    # Added pin_memory=True for faster CPU to GPU data transfer
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
-    # 2. Initialize Model
     print(f"Initializing {args.task} model with Dropout = {args.dropout}...")
     if args.task == "enhancement":
         model = EnhancementUNet(dropout_rate=args.dropout)
@@ -380,7 +396,11 @@ if __name__ == '__main__':
     else:
         raise ValueError("Invalid task")
 
-    # 3. Create Trainer and Train
+    # Wrap model with DataParallel if multiple GPUs are available
+    if torch.cuda.device_count() > 1:
+        print(f"Wrapping model in DataParallel using {torch.cuda.device_count()} GPUs.")
+        model = nn.DataParallel(model)
+
     trainer = create_trainer(
         trainer_type=args.task,
         model=model,
