@@ -105,8 +105,8 @@ class SyntheticDocumentDataset(Dataset):
             projected_2d[i, 0] = proj_x + cx
             projected_2d[i, 1] = proj_y + cy
             
-        projected_2d[:, 0] = np.clip(projected_2d[:, 0], 0, bg_w - 1)
-        projected_2d[:, 1] = np.clip(projected_2d[:, 1], 0, bg_h - 1)
+        # projected_2d[:, 0] = np.clip(projected_2d[:, 0], 0, bg_w - 1)
+        # projected_2d[:, 1] = np.clip(projected_2d[:, 1], 0, bg_h - 1)
         
         return projected_2d
 
