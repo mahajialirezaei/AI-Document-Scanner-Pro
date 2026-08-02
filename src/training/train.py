@@ -328,6 +328,16 @@ if __name__ == '__main__':
     from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
     from src.data.data_splitter import get_synthetic_splits
 
+    parser = argparse.ArgumentParser(description="Train Document Scanning Models (Phases 3 & 4)")
+    
+    parser.add_argument("--task", type=str, required=True, 
+                        choices=["enhancement", "corner_regression", "corner_heatmap"],
+                        help="Which task to train")
+    parser.add_argument("--data-dir", type=str, default="data/raw", help="Unused in training")
+    parser.add_argument("--annotations", type=str, default="data/raw/real_photos/_annotations.coco.json", help="Unused")
+    parser.add_argument("--clean-scans", type=str, default="data/clean_scans", help="Path to clean scans")
+    parser.add_argument("--backgrounds", type=str, default="data/random_backgrounds", help="Path to random backgrounds")
+    
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -359,6 +369,7 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8)
 
+    # 2. Initialize Model
     print(f"Initializing {args.task} model with Dropout = {args.dropout}...")
     if args.task == "enhancement":
         model = EnhancementUNet(dropout_rate=args.dropout)
