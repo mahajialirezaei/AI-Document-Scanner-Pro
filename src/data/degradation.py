@@ -220,7 +220,6 @@ class DegradationPipeline:
         Apply a random combination of degradations.
         """
         degradation_funcs = [
-            lambda x: self.apply_ink_simulation(x),
             lambda x: self.apply_motion_blur(x),
             lambda x: self.apply_gaussian_blur(x),
             lambda x: self.apply_gaussian_noise(x),
@@ -231,14 +230,6 @@ class DegradationPipeline:
             lambda x: self.apply_shadow(x, num_shadows=random.randint(1, 2)),
             lambda x: self.apply_resolution_loss(x),
         ]
-        
-        selected = random.sample(degradation_funcs, min(num_degradations, len(degradation_funcs)))
-        
-        degraded = image.copy()
-        for func in selected:
-            degraded = func(degraded)
-        
-        return degraded
 
 
 def create_degradation_pipeline(seed: Optional[int] = None) -> DegradationPipeline:

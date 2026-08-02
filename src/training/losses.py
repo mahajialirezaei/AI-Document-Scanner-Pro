@@ -59,7 +59,7 @@ class SobelLoss(nn.Module):
 
 
 class EnhancementLoss(nn.Module):
-    def __init__(self, l1_weight=1.0, edge_weight=0.5, ssim_weight=1.0, text_weight=15.0, color_weight=0.2):
+    def __init__(self, l1_weight=1.0, edge_weight=0.5, ssim_weight=1.0, text_weight=3.0, color_weight=0.5):
         super().__init__()
         self.sobel = SobelLoss()
         self.l1_weight = l1_weight
@@ -71,7 +71,6 @@ class EnhancementLoss(nn.Module):
     def forward(self, pred, target):
         loss = 0.0
         
-        # Ensure inputs are safely clamped
         pred = torch.clamp(pred, 0.0, 1.0)
         target = torch.clamp(target, 0.0, 1.0)
         
@@ -94,17 +93,8 @@ class EnhancementLoss(nn.Module):
             loss += self.ssim_weight * ssim_loss
             
         if self.color_weight > 0 and pred.shape[1] == 3:
-            rg_diff_pred = pred[:, 0, :, :] - pred[:, 1, :, :]
-            rb_diff_pred = pred[:, 0, :, :] - pred[:, 2, :, :]
-            gb_diff_pred = pred[:, 1, :, :] - pred[:, 2, :, :]
-            
-            rg_diff_target = target[:, 0, :, :] - target[:, 1, :, :]
-            rb_diff_target = target[:, 0, :, :] - target[:, 2, :, :]
-            gb_diff_target = target[:, 1, :, :] - target[:, 2, :, :]
-            
-            color_loss = F.smooth_l1_loss(rg_diff_pred, rg_diff_target) + \
-                         F.smooth_l1_loss(rb_diff_pred, rb_diff_target) + \
-                         F.smooth_l1_loss(gb_diff_pred, gb_diff_target)
+            cos_sim = F.cosine_similarity(pred + 1e-6, target + 1e-6, dim=1)
+            color_loss = (1.0 - cos_sim).mean()
                          
             loss += self.color_weight * color_loss
         

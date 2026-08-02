@@ -121,6 +121,10 @@ class SyntheticDocumentDataset(Dataset):
         bg_path = random.choice(self.backgrounds)
         
         clean_scan = cv2.imread(str(scan_path))
+        
+        if self.use_degradation and self.degradation_pipeline:
+            clean_scan = self.degradation_pipeline.apply_ink_simulation(clean_scan)
+            
         clean_scan = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2RGB)
 
         bg_image = cv2.imread(str(bg_path))
