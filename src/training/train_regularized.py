@@ -1,336 +1,186 @@
-"""
-Phase 6: Regularization Strategies for Document Scanning Models
-
-This module implements advanced regularization techniques including:
-- Dynamic Dropout Scheduling
-- Robust Loss Functions (Huber, Smooth L1)
-- Comparison experiments between regularized and baseline models
-
-NOTE: Per PDF section 4.4, third-party libraries like Kornia are prohibited for 
-data augmentation in training phases. Only OpenCV functions should be used for 
-degradations (handled in degradation.py). Kornia is only allowed in Bonus section
-for differentiable warp_perspective operations.
-"""
+import time
+import math
+import logging
+import argparse
+from pathlib import Path
+from typing import List
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from typing import Dict, List, Optional, Tuple
-import logging
-from pathlib import Path
 
-from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
-from src.training.losses import EnhancementLoss, CornerLoss
+from src.models.model import EnhancementUNet, init_weights
+from src.training.losses import EnhancementLoss
+from src.data.data_splitter import get_synthetic_splits
 
 logger = logging.getLogger(__name__)
 
-
 class DropoutScheduler:
-    """
-    Dynamically adjusts dropout rates during training.
-    
-    Strategies:
-    - Linear increase: Gradually increase dropout to prevent overfitting
-    - Cosine annealing: Smooth dropout variation
-    - Step function: Discrete changes at specific epochs
-    """
-    
-    def __init__(
-        self,
-        model: nn.Module,
-        strategy: str = 'linear',
-        initial_dropout: float = 0.0,
-        final_dropout: float = 0.5,
-        warmup_epochs: int = 5,
-        total_epochs: int = 100
-    ):
+    def __init__(self, model: nn.Module, strategy: str = 'linear', initial_dropout: float = 0.0, final_dropout: float = 0.5, warmup_epochs: int = 5, total_epochs: int = 100):
         self.model = model
         self.strategy = strategy
         self.initial_dropout = initial_dropout
         self.final_dropout = final_dropout
         self.warmup_epochs = warmup_epochs
         self.total_epochs = total_epochs
-        
-        # Find all dropout layers in the model
         self.dropout_layers = self._find_dropout_layers()
-        logger.info(f"Found {len(self.dropout_layers)} dropout layers")
-    
+
     def _find_dropout_layers(self) -> List[nn.Dropout]:
-        """Find all Dropout layers in the model."""
-        dropout_layers = []
-        for module in self.model.modules():
-            if isinstance(module, nn.Dropout):
-                dropout_layers.append(module)
-        return dropout_layers
-    
+        return [module for module in self.model.modules() if isinstance(module, nn.Dropout)]
+
     def step(self, epoch: int) -> None:
-        """Update dropout rates based on current epoch."""
         if epoch < self.warmup_epochs:
-            # During warmup, keep dropout at initial value
             current_dropout = self.initial_dropout
         else:
-            # Calculate progress through training (after warmup)
-            progress = (epoch - self.warmup_epochs) / (self.total_epochs - self.warmup_epochs)
+            progress = (epoch - self.warmup_epochs) / max(1, (self.total_epochs - self.warmup_epochs))
             progress = min(1.0, max(0.0, progress))
             
             if self.strategy == 'linear':
                 current_dropout = self.initial_dropout + progress * (self.final_dropout - self.initial_dropout)
             elif self.strategy == 'cosine':
-                import math
                 current_dropout = self.initial_dropout + (self.final_dropout - self.initial_dropout) * (1 - math.cos(progress * math.pi)) / 2
             elif self.strategy == 'step':
-                # Increase dropout every 25% of training
-                if progress < 0.25:
-                    current_dropout = self.initial_dropout
-                elif progress < 0.5:
-                    current_dropout = self.initial_dropout + 0.3 * (self.final_dropout - self.initial_dropout)
-                elif progress < 0.75:
-                    current_dropout = self.initial_dropout + 0.6 * (self.final_dropout - self.initial_dropout)
-                else:
-                    current_dropout = self.final_dropout
+                if progress < 0.25: current_dropout = self.initial_dropout
+                elif progress < 0.5: current_dropout = self.initial_dropout + 0.3 * (self.final_dropout - self.initial_dropout)
+                elif progress < 0.75: current_dropout = self.initial_dropout + 0.6 * (self.final_dropout - self.initial_dropout)
+                else: current_dropout = self.final_dropout
             else:
                 current_dropout = self.initial_dropout
-        
-        # Apply new dropout rate to all layers
-        for dropout_layer in self.dropout_layers:
-            dropout_layer.p = current_dropout
-        
-        if epoch >= self.warmup_epochs:
-            logger.info(f"Epoch {epoch}: Dropout rate set to {current_dropout:.4f} ({self.strategy} strategy)")
-    
-    def set_dropout_for_eval(self) -> None:
-        """Set dropout to 0 for evaluation/inference."""
-        for dropout_layer in self.dropout_layers:
-            dropout_layer.p = 0.0
 
+        for layer in self.dropout_layers:
+            layer.p = current_dropout
 
-def create_robust_criterion(
-    task_type: str = 'enhancement',
-    loss_type: str = 'huber',
-    **kwargs
-) -> nn.Module:
-    """
-    Create robust loss functions for better generalization.
-    
-    Args:
-        task_type: 'enhancement' or 'corner_detection'
-        loss_type: 'huber', 'smooth_l1', or 'l1'
-        **kwargs: Additional arguments for loss initialization
-    
-    Returns:
-        Configured loss function
-    """
-    if task_type == 'enhancement':
-        if loss_type == 'huber':
-            return nn.HuberLoss(reduction='mean', delta=kwargs.get('delta', 1.0))
-        elif loss_type == 'smooth_l1':
-            return nn.SmoothL1Loss(reduction='mean')
-        else:
-            return EnhancementLoss(
-                edge_weight=kwargs.get('edge_weight', 0.1),
-                use_sobel=kwargs.get('use_sobel', True)
-            )
-    
-    elif task_type == 'corner_detection':
-        if loss_type == 'huber':
-            return nn.HuberLoss(reduction='mean', delta=kwargs.get('delta', 0.5))
-        elif loss_type == 'smooth_l1':
-            return nn.SmoothL1Loss(reduction='mean')
-        else:
-            return CornerLoss(
-                heatmap_weight=kwargs.get('heatmap_weight', 0.5),
-                coordinate_weight=kwargs.get('coordinate_weight', 0.5)
-            )
-    
-    else:
-        raise ValueError(f"Unknown task type: {task_type}")
-
-
-class RegularizationExperiment:
-    """
-    Run experiments comparing regularized vs baseline training.
-    """
-    
-    def __init__(
-        self,
-        model_class: type,
-        model_config: Dict,
-        device: torch.device,
-        results_dir: Path
-    ):
-        self.model_class = model_class
-        self.model_config = model_config
+class RegularizedEnhancementTrainer:
+    def __init__(self, model, train_loader, val_loader, device, save_dir, lr=1e-3, epochs=60, dropout_schedule='cosine', final_dropout=0.5):
+        self.model = model.to(device)
+        self.train_loader = train_loader
+        self.val_loader = val_loader
         self.device = device
-        self.results_dir = results_dir
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-    
-    def run_comparison(
-        self,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        epochs: int = 100,
-        learning_rate: float = 1e-3
-    ) -> Dict[str, List[float]]:
-        """
-        Train baseline and regularized models, compare performance.
+        self.save_dir = Path(save_dir)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.epochs = epochs
         
-        Returns:
-            Dictionary with training histories
-        """
-        results = {}
+        self.criterion = EnhancementLoss().to(device)
+        self.optimizer = optim.Adam(model.parameters(), lr=lr)
+        self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=epochs)
         
-        # Train baseline model (no regularization)
-        logger.info("=" * 60)
-        logger.info("Training BASELINE model (no regularization)")
-        logger.info("=" * 60)
-        
-        baseline_model = self.model_class(**self.model_config).to(self.device)
-        baseline_results = self._train_model(
-            baseline_model, train_loader, val_loader, epochs, learning_rate,
-            use_regularization=False
-        )
-        results['baseline'] = baseline_results
-        
-        # Save baseline checkpoint
-        torch.save(
-            baseline_model.state_dict(),
-            self.results_dir / 'baseline_checkpoint.pth'
+        self.dropout_scheduler = DropoutScheduler(
+            model=self.model, 
+            strategy=dropout_schedule, 
+            initial_dropout=0.0, 
+            final_dropout=final_dropout, 
+            warmup_epochs=5, 
+            total_epochs=epochs
         )
         
-        # Train regularized model
-        logger.info("=" * 60)
-        logger.info("Training REGULARIZED model")
-        logger.info("=" * 60)
-        
-        reg_model = self.model_class(**self.model_config).to(self.device)
-        reg_results = self._train_model(
-            reg_model, train_loader, val_loader, epochs, learning_rate,
-            use_regularization=True
-        )
-        results['regularized'] = reg_results
-        
-        # Save regularized checkpoint
-        torch.save(
-            reg_model.state_dict(),
-            self.results_dir / 'regularized_checkpoint.pth'
-        )
-        
-        return results
-    
-    def _train_model(
-        self,
-        model: nn.Module,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        epochs: int,
-        learning_rate: float,
-        use_regularization: bool
-    ) -> Dict[str, List[float]]:
-        """Internal training loop with optional regularization."""
-        
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-        
-        # Initialize regularization components
-        dropout_scheduler = None
-        criterion = None
-        
-        if use_regularization:
-            # Dropout scheduling
-            dropout_scheduler = DropoutScheduler(
-                model,
-                strategy='cosine',
-                initial_dropout=0.0,
-                final_dropout=0.3,
-                warmup_epochs=10,
-                total_epochs=epochs
-            )
-            
-            # Robust loss function
-            if 'UNet' in self.model_class.__name__:
-                criterion = create_robust_criterion('enhancement', 'huber', delta=1.0)
-            else:
-                criterion = create_robust_criterion('corner_detection', 'huber', delta=0.5)
-        else:
-            # Baseline: simple L1 loss
-            if 'UNet' in self.model_class.__name__:
-                criterion = nn.L1Loss()
-            else:
-                criterion = nn.L1Loss()
-        
-        train_losses = []
-        val_losses = []
-        
-        for epoch in range(epochs):
-            # Update dropout schedule if using regularization
-            if dropout_scheduler is not None:
-                dropout_scheduler.step(epoch)
-            
-            # Training phase - simple training loop (no Kornia augmentation)
-            model.train()
-            total_loss = 0.0
-            for images, targets in train_loader:
-                images, targets = images.to(self.device), targets.to(self.device)
-                optimizer.zero_grad()
-                outputs = model(images)
-                loss = criterion(outputs, targets)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-            train_metrics = {'loss': total_loss / len(train_loader)}
-            
-            # Validation phase
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for images, targets in val_loader:
-                    images, targets = images.to(self.device), targets.to(self.device)
-                    outputs = model(images)
-                    loss = criterion(outputs, targets)
-                    val_loss += loss.item()
-            
-            train_losses.append(train_metrics['loss'])
-            val_losses.append(val_loss / len(val_loader))
-            
-            scheduler.step()
-            
-            if (epoch + 1) % 10 == 0:
-                logger.info(
-                    f"Epoch {epoch+1}/{epochs} - "
-                    f"Train Loss: {train_losses[-1]:.6f}, "
-                    f"Val Loss: {val_losses[-1]:.6f}"
-                )
-        
-        return {
-            'train_losses': train_losses,
-            'val_losses': val_losses
-        }
+        self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
+        self.best_val_loss = float('inf')
 
+    def train_epoch(self):
+        self.model.train()
+        total_loss = 0.0
+        for batch in self.train_loader:
+            degraded = batch['rectified_input'].to(self.device, non_blocking=True)
+            clean = batch['clean_target'].to(self.device, non_blocking=True)
+            
+            self.optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
+                output = self.model(degraded)
+                loss = self.criterion(output, clean)
+                
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            
+            total_loss += loss.item() * degraded.size(0)
+        return total_loss / len(self.train_loader.dataset)
+
+    @torch.no_grad()
+    def validate(self):
+        self.model.eval()
+        total_loss = 0.0
+        for batch in self.val_loader:
+            degraded = batch['rectified_input'].to(self.device, non_blocking=True)
+            clean = batch['clean_target'].to(self.device, non_blocking=True)
+            
+            with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
+                output = self.model(degraded)
+                loss = self.criterion(output, clean)
+            total_loss += loss.item() * degraded.size(0)
+        return total_loss / len(self.val_loader.dataset)
+
+    def train(self):
+        print(f"Starting Regularized Enhancement Training for {self.epochs} epochs...")
+        for epoch in range(1, self.epochs + 1):
+            start_time = time.time()
+            self.dropout_scheduler.step(epoch)
+            
+            train_loss = self.train_epoch()
+            val_loss = self.validate()
+            self.scheduler.step()
+            
+            current_lr = self.optimizer.param_groups[0]['lr']
+            elapsed = time.time() - start_time
+            
+            if val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                model_state = self.model.module.state_dict() if isinstance(self.model, nn.DataParallel) else self.model.state_dict()
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model_state,
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'val_loss': val_loss,
+                }, self.save_dir / 'best_model.pth')
+                
+            print(f"Epoch {epoch:3d}/{self.epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
 
 if __name__ == '__main__':
-    # Example usage
-    logging.basicConfig(level=logging.INFO)
-    
+    parser = argparse.ArgumentParser(description="Phase 6: Regularized Training")
+    parser.add_argument("--task", type=str, default="enhancement")
+    parser.add_argument("--dropout-rate", type=float, default=0.5)
+    parser.add_argument("--dropout-schedule", type=str, choices=['linear', 'cosine', 'step'], default='cosine')
+    parser.add_argument("--clean-scans", type=str, required=True)
+    parser.add_argument("--backgrounds", type=str, required=True)
+    parser.add_argument("--epochs", type=int, default=60)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--image-size", type=int, default=512)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--save-dir", type=str, required=True)
+    args = parser.parse_args()
+
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Test dropout scheduler
-    model = EnhancementUNet(dropout_rate=0.1)
-    scheduler = DropoutScheduler(
-        model,
-        strategy='cosine',
-        initial_dropout=0.0,
-        final_dropout=0.5,
-        warmup_epochs=5,
-        total_epochs=50
+    print(f"Using device: {device}")
+
+    train_ds, val_ds, _ = get_synthetic_splits(
+        clean_scans_dir=args.clean_scans,
+        backgrounds_dir=args.backgrounds,
+        image_size=(args.image_size, args.image_size),
+        seed=42,
+        num_eval_samples=100
     )
     
-    print("Testing dropout scheduler...")
-    for epoch in range(0, 50, 10):
-        scheduler.step(epoch)
-        for name, module in model.named_modules():
-            if isinstance(module, nn.Dropout):
-                print(f"  Epoch {epoch}: Dropout = {module.p:.4f}")
-                break
-    
-    print("\nRegularization module ready for Phase 6 experiments!")
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+
+    model = EnhancementUNet(dropout_rate=0.0) 
+    model.apply(init_weights)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+
+    trainer = RegularizedEnhancementTrainer(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=device,
+        save_dir=args.save_dir,
+        lr=args.lr,
+        epochs=args.epochs,
+        dropout_schedule=args.dropout_schedule,
+        final_dropout=args.dropout_rate
+    )
+    trainer.train()
