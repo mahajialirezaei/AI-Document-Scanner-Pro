@@ -398,15 +398,16 @@ if __name__ == '__main__':
             backgrounds_dir=args.backgrounds,
             image_size=(args.image_size, args.image_size),
             seed=args.seed,
-            num_eval_samples=100
+            num_eval_samples=100,
+            train_samples_per_epoch=800
         )
     except Exception as e:
         print(f"Error loading datasets: {e}")
         print("Please ensure 'data/clean_scans' and 'data/random_backgrounds' directories exist and contain images.")
         sys.exit(1)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
 
     print(f"Initializing {args.task} model with Dropout = {args.dropout}...")
     if args.task == "enhancement":
