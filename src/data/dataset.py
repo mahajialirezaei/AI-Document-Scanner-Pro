@@ -108,7 +108,7 @@ class SyntheticDocumentDataset(Dataset):
             
         return projected_2d
 
-def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
         """Add structural distractors to teach the model to ignore non-paper edges."""
         result = img.copy()
         
@@ -182,7 +182,7 @@ def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
                 cv2.line(result, pt1, pt2, color, thickness)
 
         return result
-        
+
 
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
         """Generate a single synthetic sample."""
