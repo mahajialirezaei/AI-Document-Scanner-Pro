@@ -356,6 +356,7 @@ def create_trainer(trainer_type, model, train_loader, val_loader, device, **kwar
 if __name__ == '__main__':
     import argparse
     import sys
+    import os
     
     from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel, init_weights
     from src.data.data_splitter import get_synthetic_splits
@@ -378,6 +379,8 @@ if __name__ == '__main__':
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dropout", type=float, default=0.2, help="Dropout rate for regularization")
+    
+    parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume training from")
 
     args = parser.parse_args()
 
@@ -421,6 +424,20 @@ if __name__ == '__main__':
 
     # Apply Kaiming Normal Weight Initialization
     model.apply(init_weights)
+
+    if args.resume:
+        if os.path.exists(args.resume):
+            print(f"Loading pre-trained weights from: {args.resume}")
+            checkpoint = torch.load(args.resume, map_location=device)
+            state_dict = checkpoint.get('model_state_dict', checkpoint)
+            
+            if list(state_dict.keys())[0].startswith('module.') and not isinstance(model, nn.DataParallel):
+                state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+                
+            model.load_state_dict(state_dict)
+            print("Weights loaded successfully!")
+        else:
+            print(f"Warning: Checkpoint not found at {args.resume}. Training from scratch.")
 
     if torch.cuda.device_count() > 1:
         print(f"Wrapping model in DataParallel using {torch.cuda.device_count()} GPUs.")
