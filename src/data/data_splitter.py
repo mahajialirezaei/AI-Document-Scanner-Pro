@@ -23,7 +23,7 @@ def get_synthetic_splits(clean_scans_dir, backgrounds_dir, image_size=(512, 512)
         backgrounds_dir=backgrounds_dir, 
         image_size=image_size, 
         use_degradation=True, 
-        freeze_data=False,
+        freeze_data=True,
         num_samples=train_samples_per_epoch
     )
     

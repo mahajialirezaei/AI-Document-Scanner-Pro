@@ -19,9 +19,10 @@ class SyntheticDocumentDataset(Dataset):
     1. Selecting a clean scan and random background
     2. Generating 4 random corner points on the background
     3. Warping the clean scan onto the background using perspective transform
-    4. Applying photometric degradations (shadows, blur, noise, etc.)
-    5. Warping back the degraded composite to get rectified input
-    6. Returning the original clean scan as target
+    4. Adding structural distractors (fake spiral bindings, dark edges, lines)
+    5. Applying photometric degradations (shadows, blur, noise, etc.)
+    6. Warping back the degraded composite to get rectified input
+    7. Returning the original clean scan as target
     
     The 4 random corner points serve as ground-truth labels for corner detection.
     """
@@ -107,6 +108,82 @@ class SyntheticDocumentDataset(Dataset):
             
         return projected_2d
 
+def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Add structural distractors to teach the model to ignore non-paper edges."""
+        result = img.copy()
+        
+        # 1. Fake Spiral Binding (15% probability -> ~3 out of 20)
+        if random.random() < 0.15:
+            # Pick left (3->0) or right (1->2) edge
+            edge_idx = random.choice([(3, 0), (1, 2)])
+            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+            
+            vec = pt2 - pt1
+            length = np.linalg.norm(vec)
+            if length > 0:
+                dir_vec = vec / length
+                # Normal vector pointing outward
+                normal = np.array([-dir_vec[1], dir_vec[0]])
+                center = np.mean(corners, axis=0)
+                midpoint = (pt1 + pt2) / 2.0
+                if np.dot(normal, midpoint - center) < 0:
+                    normal = -normal
+                    
+                offset_dist = random.uniform(5, 20)
+                pt1_offset = pt1 + normal * offset_dist
+                pt2_offset = pt2 + normal * offset_dist
+                
+                num_rings = int(length // random.uniform(15, 30))
+                for i in range(1, max(2, num_rings)):
+                    t = i / num_rings
+                    ring_pt = pt1_offset * (1 - t) + pt2_offset * t
+                    
+                    color = (random.randint(10, 50), random.randint(10, 50), random.randint(10, 50))
+                    radius = random.randint(4, 12)
+                    cv2.circle(result, (int(ring_pt[0]), int(ring_pt[1])), radius, color, -1)
+                    
+        # 2. Fake Dark Border/Folder Edge (15% probability -> ~3 out of 20)
+        if random.random() < 0.15:
+            edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
+            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+            
+            vec = pt2 - pt1
+            length = np.linalg.norm(vec)
+            if length > 0:
+                dir_vec = vec / length
+                normal = np.array([-dir_vec[1], dir_vec[0]])
+                
+                center = np.mean(corners, axis=0)
+                midpoint = (pt1 + pt2) / 2.0
+                if np.dot(normal, midpoint - center) < 0:
+                    normal = -normal
+                    
+                offset_dist = random.uniform(5, 30)
+                pt1_offset = pt1 + normal * offset_dist
+                pt2_offset = pt2 + normal * offset_dist
+                
+                # Extend the line slightly past the paper corners
+                pt1_ext = pt1_offset - dir_vec * random.uniform(10, 50)
+                pt2_ext = pt2_offset + dir_vec * random.uniform(10, 50)
+                
+                color = (random.randint(0, 40), random.randint(0, 40), random.randint(0, 40))
+                thickness = random.randint(10, 60)
+                cv2.line(result, (int(pt1_ext[0]), int(pt1_ext[1])), 
+                         (int(pt2_ext[0]), int(pt2_ext[1])), color, thickness)
+                         
+        # 3. Random background lines/wires (15% probability)
+        if random.random() < 0.15:
+            h, w = result.shape[:2]
+            for _ in range(random.randint(1, 3)):
+                pt1 = (random.randint(0, w), random.randint(0, h))
+                pt2 = (random.randint(0, w), random.randint(0, h))
+                color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                thickness = random.randint(2, 12)
+                cv2.line(result, pt1, pt2, color, thickness)
+
+        return result
+        
+
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
         """Generate a single synthetic sample."""
         # Restore RNG state if provided (for frozen datasets)
@@ -151,6 +228,10 @@ class SyntheticDocumentDataset(Dataset):
         # Composite: place warped scan onto background
         composite = bg_image.copy()
         composite[warped_mask == 255] = warped_scan[warped_mask == 255]
+
+        # --- ADD STRUCTURAL DISTRACTORS HERE ---
+        if self.use_degradation:
+            composite = self._add_distractors(composite, dst_pts)
 
         # Apply photometric degradations (blur, noise, shadows, etc.)
         if self.use_degradation and self.degradation_pipeline:
@@ -224,11 +305,8 @@ class SyntheticDocumentDataset(Dataset):
         # For frozen datasets, retrieve pre-generated sample
         if self.freeze_data and self._cached_data is not None:
             cached = self._cached_data[idx % len(self._cached_data)]
-            # Restore RNG state and regenerate to ensure exact same sample
-            random.setstate(cached['rng_state']['random'])
-            np.random.set_state(cached['rng_state']['numpy'])
-            return self._generate_single_sample(idx, cached['rng_state'])
-        
+            return cached['sample']
+            
         # For training, generate fresh sample on-the-fly
         return self._generate_single_sample(idx)
 
