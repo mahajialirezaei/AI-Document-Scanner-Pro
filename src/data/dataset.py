@@ -70,9 +70,45 @@ class SyntheticDocumentDataset(Dataset):
         pts = np.array([[tl_x, tl_y], [tr_x, tr_y], [br_x, br_y], [bl_x, bl_y]], dtype=np.float32)
         return pts
 
+    def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.20) -> np.ndarray:
+        """اضافه کردن شیرازه و سایه به صورت تخت قبل از پرسپکتیو، تا تغییر فرم کاملاً واقعی باشد"""
+        if not self.use_degradation or random.random() > probability:
+            return img
+            
+        h, w = img.shape[:2]
+        art_type = random.choice(['spiral', 'gutter_shadow'])
+        side = random.choice(['left', 'right'])
+        
+        result = img.copy()
+        
+        if art_type == 'spiral':
+            num_holes = random.randint(20, 40)
+            y_steps = np.linspace(10, h - 10, num_holes)
+            x_pos = random.randint(15, 35) if side == 'left' else w - random.randint(15, 35)
+            
+            for y in y_steps:
+                radius = random.randint(4, 9)
+                cv2.circle(result, (x_pos, int(y)), radius, (30, 30, 30), -1)
+                cv2.line(result, (x_pos, int(y)), (x_pos + random.randint(-15, 15), int(y)), (150, 150, 150), 3)
+                
+        elif art_type == 'gutter_shadow':
+            shadow_width = random.randint(40, 120)
+            # کنتراست سایه را قوی‌تر کردیم تا دقیقاً مشابه کلاسورهای تیره شود
+            gradient = np.linspace(0.4, 1.0, shadow_width).reshape(1, shadow_width, 1)
+            
+            if side == 'left':
+                result[:, :shadow_width] = np.clip(result[:, :shadow_width] * gradient, 0, 255).astype(np.uint8)
+            else:
+                gradient = np.flip(gradient, axis=1) 
+                result[:, -shadow_width:] = np.clip(result[:, -shadow_width:] * gradient, 0, 255).astype(np.uint8)
+                
+        return result
+
     def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
         result = img.copy()
-        if random.random() < 0.15:
+        center = np.mean(corners, axis=0)
+        
+        if random.random() < 0.08:
             edge_idx = random.choice([(3, 0), (1, 2)])
             pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
             vec = pt2 - pt1
@@ -80,11 +116,9 @@ class SyntheticDocumentDataset(Dataset):
             if length > 0:
                 dir_vec = vec / length
                 normal = np.array([-dir_vec[1], dir_vec[0]])
-                center = np.mean(corners, axis=0)
-                midpoint = (pt1 + pt2) / 2.0
-                if np.dot(normal, midpoint - center) < 0:
+                if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
                     normal = -normal
-                offset_dist = random.uniform(5, 20)
+                offset_dist = random.uniform(15, 30) 
                 pt1_offset = pt1 + normal * offset_dist
                 pt2_offset = pt2 + normal * offset_dist
                 num_rings = int(length // random.uniform(15, 30))
@@ -92,39 +126,57 @@ class SyntheticDocumentDataset(Dataset):
                     t = i / num_rings
                     ring_pt = pt1_offset * (1 - t) + pt2_offset * t
                     color = (random.randint(10, 50), random.randint(10, 50), random.randint(10, 50))
-                    radius = random.randint(4, 12)
-                    cv2.circle(result, (int(ring_pt[0]), int(ring_pt[1])), radius, color, -1)
-                    
-        if random.random() < 0.15:
+                    cv2.circle(result, (int(ring_pt[0]), int(ring_pt[1])), random.randint(4, 12), color, -1)
+
+        if random.random() < 0.10:
+            thickness = random.randint(40, 100)
+            color = (random.randint(0, 30), random.randint(0, 30), random.randint(0, 30))
+            edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+            random.shuffle(edges)
+            for edge_idx in edges[:random.randint(1, 2)]:
+                pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+                vec = pt2 - pt1
+                if np.linalg.norm(vec) > 0:
+                    normal = np.array([-vec[1], vec[0]])
+                    normal = normal / np.linalg.norm(normal)
+                    if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
+                        normal = -normal
+                    offset = (thickness // 2) + 2 
+                    pt1_out = pt1 + normal * offset
+                    pt2_out = pt2 + normal * offset
+                    cv2.line(result, tuple(pt1_out.astype(int)), tuple(pt2_out.astype(int)), color, thickness)
+
+        if random.random() < 0.08:
+            overlay = result.copy()
+            poly_pts = corners.copy()
+            poly_pts[:, 0] += np.random.uniform(-30, 30, 4)
+            poly_pts[:, 1] += np.random.uniform(-30, 30, 4)
+            cv2.fillPoly(overlay, [poly_pts.astype(np.int32)], (255, 255, 255))
+            alpha = random.uniform(0.1, 0.25)
+            result = cv2.addWeighted(overlay, alpha, result, 1 - alpha, 0)
+            
+        if random.random() < 0.08:
+            overlay = result.copy()
+            edge_idx = random.choice([(3, 0), (1, 2)]) 
+            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+            cv2.line(overlay, tuple(pt1.astype(int)), tuple(pt2.astype(int)), (0,0,0), random.randint(60, 100))
+            result = cv2.addWeighted(overlay, 0.3, result, 0.7, 0)
+
+        if random.random() < 0.10:
             edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
             pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
-            vec = pt2 - pt1
-            length = np.linalg.norm(vec)
-            if length > 0:
-                dir_vec = vec / length
-                normal = np.array([-dir_vec[1], dir_vec[0]])
-                center = np.mean(corners, axis=0)
-                midpoint = (pt1 + pt2) / 2.0
-                if np.dot(normal, midpoint - center) < 0:
-                    normal = -normal
-                offset_dist = random.uniform(5, 30)
-                pt1_offset = pt1 + normal * offset_dist
-                pt2_offset = pt2 + normal * offset_dist
-                pt1_ext = pt1_offset - dir_vec * random.uniform(10, 50)
-                pt2_ext = pt2_offset + dir_vec * random.uniform(10, 50)
-                color = (random.randint(0, 40), random.randint(0, 40), random.randint(0, 40))
-                thickness = random.randint(10, 60)
-                cv2.line(result, (int(pt1_ext[0]), int(pt1_ext[1])), 
-                         (int(pt2_ext[0]), int(pt2_ext[1])), color, thickness)
-                         
-        if random.random() < 0.15:
+            t = random.uniform(0.2, 0.8)
+            finger_center = pt1 * (1 - t) + pt2 * t
+            skin_color = (random.randint(110, 160), random.randint(140, 190), random.randint(190, 230))
+            cv2.circle(result, tuple(finger_center.astype(int)), random.randint(25, 40), skin_color, -1)
+
+        if random.random() < 0.10:
             h, w = result.shape[:2]
             for _ in range(random.randint(1, 3)):
                 pt1 = (random.randint(0, w), random.randint(0, h))
                 pt2 = (random.randint(0, w), random.randint(0, h))
-                color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-                thickness = random.randint(2, 12)
-                cv2.line(result, pt1, pt2, color, thickness)
+                cv2.line(result, pt1, pt2, (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)), random.randint(2, 10))
+
         return result
 
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
@@ -135,6 +187,8 @@ class SyntheticDocumentDataset(Dataset):
         scan_path = self.clean_scans[idx % len(self.clean_scans)]
         bg_path = random.choice(self.backgrounds)
         clean_scan = cv2.imread(str(scan_path))
+        
+        clean_scan = self._add_binding_artifacts(clean_scan, probability=0.20)
         
         if self.use_degradation and self.degradation_pipeline:
             clean_scan = self.degradation_pipeline.apply_ink_simulation(clean_scan)
