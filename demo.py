@@ -456,7 +456,7 @@ def main():
             device=device,
             image_size=args.image_size,
             visualize=args.visualize,
-            save_intermediate=save_intermediate,
+            save_intermediate=args.save_intermediate,
         )
         
         print("\n" + "=" * 60)

@@ -10,15 +10,22 @@ from typing import Dict, List, Tuple, Optional, Any
 from torch.utils.data import Dataset, DataLoader
 from .degradation import create_degradation_pipeline
 
-def _order_points(pts: np.ndarray) -> np.ndarray:
-    rect = np.zeros((4, 2), dtype=np.float32)
-    s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
-    return rect
+def order_points(pts: np.ndarray) -> np.ndarray:
+    """
+    Deterministic Top/Bottom -> Left/Right sorting.
+    Guarantees [Top-Left, Top-Right, Bottom-Right, Bottom-Left] order.
+    """
+    if len(pts) != 4:
+        return pts
+        
+    y_sorted = pts[np.argsort(pts[:, 1])]
+    top_half = y_sorted[:2, :]
+    bottom_half = y_sorted[2:, :]
+    
+    tl, tr = top_half[np.argsort(top_half[:, 0])]
+    bl, br = bottom_half[np.argsort(bottom_half[:, 0])]
+    
+    return np.array([tl, tr, br, bl], dtype=np.float32)
 
 class SyntheticDocumentDataset(Dataset):
     def __init__(self, 
@@ -29,7 +36,7 @@ class SyntheticDocumentDataset(Dataset):
                  seed: Optional[int] = None,
                  freeze_data: bool = False,
                  num_samples: Optional[int] = None):
-        
+                 
         self.clean_scans = clean_scans_paths
         self.backgrounds = list(Path(backgrounds_dir).glob("*.jpg"))
         self.image_size = image_size
@@ -71,7 +78,6 @@ class SyntheticDocumentDataset(Dataset):
         return pts
 
     def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.20) -> np.ndarray:
-        """اضافه کردن شیرازه و سایه به صورت تخت قبل از پرسپکتیو، تا تغییر فرم کاملاً واقعی باشد"""
         if not self.use_degradation or random.random() > probability:
             return img
             
@@ -82,24 +88,28 @@ class SyntheticDocumentDataset(Dataset):
         result = img.copy()
         
         if art_type == 'spiral':
+            overlay = np.zeros_like(result)
             num_holes = random.randint(20, 40)
             y_steps = np.linspace(10, h - 10, num_holes)
             x_pos = random.randint(15, 35) if side == 'left' else w - random.randint(15, 35)
             
             for y in y_steps:
                 radius = random.randint(4, 9)
-                cv2.circle(result, (x_pos, int(y)), radius, (30, 30, 30), -1)
-                cv2.line(result, (x_pos, int(y)), (x_pos + random.randint(-15, 15), int(y)), (150, 150, 150), 3)
+                cv2.circle(overlay, (x_pos, int(y)), radius, (30, 30, 30), -1)
+                cv2.line(overlay, (x_pos, int(y)), (x_pos + random.randint(-15, 15), int(y)), (150, 150, 150), 3)
+            
+            overlay = cv2.GaussianBlur(overlay, (5, 5), 2)
+            mask = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask, overlay, result)
                 
         elif art_type == 'gutter_shadow':
             shadow_width = random.randint(40, 120)
-            # کنتراست سایه را قوی‌تر کردیم تا دقیقاً مشابه کلاسورهای تیره شود
             gradient = np.linspace(0.4, 1.0, shadow_width).reshape(1, shadow_width, 1)
             
             if side == 'left':
                 result[:, :shadow_width] = np.clip(result[:, :shadow_width] * gradient, 0, 255).astype(np.uint8)
             else:
-                gradient = np.flip(gradient, axis=1) 
+                gradient = np.flip(gradient, axis=1)
                 result[:, -shadow_width:] = np.clip(result[:, -shadow_width:] * gradient, 0, 255).astype(np.uint8)
                 
         return result
@@ -109,6 +119,7 @@ class SyntheticDocumentDataset(Dataset):
         center = np.mean(corners, axis=0)
         
         if random.random() < 0.08:
+            overlay = np.zeros_like(result)
             edge_idx = random.choice([(3, 0), (1, 2)])
             pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
             vec = pt2 - pt1
@@ -118,7 +129,7 @@ class SyntheticDocumentDataset(Dataset):
                 normal = np.array([-dir_vec[1], dir_vec[0]])
                 if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
                     normal = -normal
-                offset_dist = random.uniform(15, 30) 
+                offset_dist = random.uniform(15, 30)
                 pt1_offset = pt1 + normal * offset_dist
                 pt2_offset = pt2 + normal * offset_dist
                 num_rings = int(length // random.uniform(15, 30))
@@ -126,9 +137,13 @@ class SyntheticDocumentDataset(Dataset):
                     t = i / num_rings
                     ring_pt = pt1_offset * (1 - t) + pt2_offset * t
                     color = (random.randint(10, 50), random.randint(10, 50), random.randint(10, 50))
-                    cv2.circle(result, (int(ring_pt[0]), int(ring_pt[1])), random.randint(4, 12), color, -1)
+                    cv2.circle(overlay, (int(ring_pt[0]), int(ring_pt[1])), random.randint(4, 12), color, -1)
+            overlay = cv2.GaussianBlur(overlay, (7, 7), 3)
+            mask = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask, overlay, result)
 
-        if random.random() < 0.10:
+        if random.random() < 0.08:
+            overlay = np.zeros_like(result)
             thickness = random.randint(40, 100)
             color = (random.randint(0, 30), random.randint(0, 30), random.randint(0, 30))
             edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
@@ -141,41 +156,56 @@ class SyntheticDocumentDataset(Dataset):
                     normal = normal / np.linalg.norm(normal)
                     if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
                         normal = -normal
-                    offset = (thickness // 2) + 2 
+                    offset = (thickness // 2) + 2
                     pt1_out = pt1 + normal * offset
                     pt2_out = pt2 + normal * offset
-                    cv2.line(result, tuple(pt1_out.astype(int)), tuple(pt2_out.astype(int)), color, thickness)
+                    cv2.line(overlay, tuple(pt1_out.astype(int)), tuple(pt2_out.astype(int)), color, thickness)
+            overlay = cv2.GaussianBlur(overlay, (21, 21), 10)
+            mask = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask, overlay, result)
 
         if random.random() < 0.08:
-            overlay = result.copy()
+            overlay = np.zeros_like(result)
             poly_pts = corners.copy()
             poly_pts[:, 0] += np.random.uniform(-30, 30, 4)
             poly_pts[:, 1] += np.random.uniform(-30, 30, 4)
             cv2.fillPoly(overlay, [poly_pts.astype(np.int32)], (255, 255, 255))
+            overlay = cv2.GaussianBlur(overlay, (51, 51), 20)
             alpha = random.uniform(0.1, 0.25)
-            result = cv2.addWeighted(overlay, alpha, result, 1 - alpha, 0)
-            
+            result = cv2.addWeighted(overlay, alpha, result, 1, 0)
+
         if random.random() < 0.08:
-            overlay = result.copy()
+            overlay = np.zeros_like(result)
             edge_idx = random.choice([(3, 0), (1, 2)]) 
             pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
-            cv2.line(overlay, tuple(pt1.astype(int)), tuple(pt2.astype(int)), (0,0,0), random.randint(60, 100))
-            result = cv2.addWeighted(overlay, 0.3, result, 0.7, 0)
+            cv2.line(overlay, tuple(pt1.astype(int)), tuple(pt2.astype(int)), (255, 255, 255), random.randint(60, 100))
+            overlay = cv2.GaussianBlur(overlay, (101, 101), 40)
+            shadow_mask = overlay.astype(np.float32) / 255.0
+            result = np.clip(result.astype(np.float32) * (1 - shadow_mask * 0.5), 0, 255).astype(np.uint8)
 
-        if random.random() < 0.10:
+        if random.random() < 0.08:
+            overlay = np.zeros_like(result)
             edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
             pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
             t = random.uniform(0.2, 0.8)
             finger_center = pt1 * (1 - t) + pt2 * t
             skin_color = (random.randint(110, 160), random.randint(140, 190), random.randint(190, 230))
-            cv2.circle(result, tuple(finger_center.astype(int)), random.randint(25, 40), skin_color, -1)
+            cv2.circle(overlay, tuple(finger_center.astype(int)), random.randint(25, 40), skin_color, -1)
+            # Soften finger edges
+            overlay = cv2.GaussianBlur(overlay, (15, 15), 5)
+            mask = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask, overlay, result)
 
-        if random.random() < 0.10:
+        if random.random() < 0.08:
+            overlay = np.zeros_like(result)
             h, w = result.shape[:2]
             for _ in range(random.randint(1, 3)):
                 pt1 = (random.randint(0, w), random.randint(0, h))
                 pt2 = (random.randint(0, w), random.randint(0, h))
-                cv2.line(result, pt1, pt2, (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)), random.randint(2, 10))
+                cv2.line(overlay, pt1, pt2, (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)), random.randint(2, 10))
+            overlay = cv2.GaussianBlur(overlay, (7, 7), 3)
+            mask = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask, overlay, result)
 
         return result
 
@@ -223,7 +253,7 @@ class SyntheticDocumentDataset(Dataset):
             degraded_composite = composite.copy()
 
         flat_pts = np.float32([[0, 0], [self.image_size[1], 0], 
-                               [self.image_size[1], self.image_size[0]], [0, self.image_size[0]]])
+                                [self.image_size[1], self.image_size[0]], [0, self.image_size[0]]])
         H_inv = cv2.getPerspectiveTransform(dst_pts, flat_pts)
         
         if degraded_composite is None or degraded_composite.size == 0:
@@ -233,7 +263,7 @@ class SyntheticDocumentDataset(Dataset):
             H_inv = np.eye(3, dtype=np.float32)
 
         rectified_degraded = cv2.warpPerspective(degraded_composite, H_inv, 
-                                                 (self.image_size[1], self.image_size[0]))
+                                                  (self.image_size[1], self.image_size[0]))
         
         degraded_composite_tensor = torch.from_numpy(degraded_composite.astype(np.float32) / 255.0).permute(2, 0, 1)
         rectified_degraded_tensor = torch.from_numpy(rectified_degraded.astype(np.float32) / 255.0).permute(2, 0, 1)
@@ -276,6 +306,7 @@ class RealDocumentDataset(Dataset):
         self.real_photos_dir = real_photos_dir
         self.scanned_photos_dir = scanned_photos_dir
         self.image_size = image_size
+
         with open(annotation_file, 'r') as f:
             self.annotations_data = json.load(f)
             
@@ -290,11 +321,13 @@ class RealDocumentDataset(Dataset):
         for img_info in self.annotations_data.get('images', []):
             file_name = img_info['file_name']
             img_id = img_info['id']
+
             match = re.search(r'^(\d+)_', file_name)
             if not match: continue
                 
             doc_number = match.group(1)
             scan_file_name = f"{doc_number}.jpg"
+
             raw_path = os.path.join(self.real_photos_dir, file_name)
             scan_path = os.path.join(self.scanned_photos_dir, scan_file_name)
             
@@ -313,6 +346,7 @@ class RealDocumentDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         data = self.valid_data[idx]
+
         raw_bgr = cv2.imread(data['raw_path'])
         scan_bgr = cv2.imread(data['scan_path'])
         
@@ -320,8 +354,9 @@ class RealDocumentDataset(Dataset):
         scan_rgb = cv2.cvtColor(scan_bgr, cv2.COLOR_BGR2RGB)
         
         original_h, original_w = raw_rgb.shape[:2]
+
         corners_original = np.array(data['segmentation'], dtype=np.float32).reshape(4, 2)
-        corners_original = _order_points(corners_original)
+        corners_original = order_points(corners_original)
         
         corners_norm = corners_original.copy()
         corners_norm[:, 0] /= original_w

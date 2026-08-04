@@ -2,7 +2,6 @@ import os
 import cv2
 import torch
 import numpy as np
-import matplotlib.subplots
 import matplotlib.pyplot as plt
 import torchvision.transforms.functional as TF
 from skimage.metrics import structural_similarity as ssim
@@ -17,14 +16,14 @@ def tensor_to_rgb(tensor: torch.Tensor) -> np.ndarray:
     return img
 
 def order_points(pts: np.ndarray) -> np.ndarray:
-    rect = np.zeros((4, 2), dtype=np.float32)
-    s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]
-    rect[2] = pts[np.argmax(s)]
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]
-    rect[3] = pts[np.argmax(diff)]
-    return rect
+    if len(pts) != 4:
+        return pts
+    y_sorted = pts[np.argsort(pts[:, 1])]
+    top_half = y_sorted[:2, :]
+    bottom_half = y_sorted[2:, :]
+    tl, tr = top_half[np.argsort(top_half[:, 0])]
+    bl, br = bottom_half[np.argsort(bottom_half[:, 0])]
+    return np.array([tl, tr, br, bl], dtype=np.float32)
 
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -54,7 +53,12 @@ def main():
 
     corner_model = CornerHeatmapModel(dropout_rate=0.2).to(device)
     corner_ckpt = torch.load('checkpoints/corner_heatmap/best_model.pth', map_location=device, weights_only=True)
-    corner_model.load_state_dict(corner_ckpt['model_state_dict'])
+    
+    state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
+    if list(state_dict.keys())[0].startswith('module.'):
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        
+    corner_model.load_state_dict(state_dict)
     corner_model.eval()
 
     metrics = {'psnr': [], 'ssim': [], 'corner_mse': []}
@@ -63,7 +67,7 @@ def main():
         sample = dataset[idx]
         raw_tensor = sample['raw_photo']
         clean_tensor = sample['clean_target']
-        gt_corners = sample['corners'].numpy() 
+        gt_corners = sample['corners'].numpy()
 
         raw_rgb = tensor_to_rgb(raw_tensor)
         raw_bgr = cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2BGR)
@@ -74,13 +78,48 @@ def main():
         raw_tensor_resized = TF.resize(raw_tensor, [256, 256]).unsqueeze(0).to(device)
         
         with torch.no_grad():
-            pred_coords, _ = corner_model(raw_tensor_resized)
+            _, pred_heatmaps = corner_model(raw_tensor_resized)
+            
+        heatmaps = pred_heatmaps.squeeze(0).cpu().numpy()
+        h_hm, w_hm = heatmaps.shape[1], heatmaps.shape[2]
         
-        pred_corners = pred_coords.squeeze(0).cpu().numpy().reshape(4, 2)
+        pred_corners = []
+        confidences = []
         
+        for i in range(4):
+            hm = heatmaps[i]
+            hm_blurred = cv2.GaussianBlur(hm, (5, 5), 0)
+            max_conf = np.max(hm_blurred)
+            y, x = np.unravel_index(np.argmax(hm_blurred), hm_blurred.shape)
+            pred_corners.append([x / w_hm, y / h_hm])
+            confidences.append(max_conf)
+            
+        pred_corners = np.array(pred_corners, dtype=np.float32)
+        
+        CONF_THRESHOLD = 0.15 
+        valid_mask = np.array(confidences) > CONF_THRESHOLD
+        
+        for i in range(4):
+            for j in range(i+1, 4):
+                dist = np.linalg.norm(pred_corners[i] - pred_corners[j])
+                if dist < 0.1: # اگر دو نقطه خیلی به هم نزدیک باشند
+                    weaker_idx = i if confidences[i] < confidences[j] else j
+                    valid_mask[weaker_idx] = False
+        
+        for i in range(4):
+            if not valid_mask[i]:
+                opp = (i + 2) % 4
+                adj1 = (i + 1) % 4
+                adj2 = (i - 1) % 4
+                
+                if valid_mask[opp] and valid_mask[adj1] and valid_mask[adj2]:
+                    pred_corners[i] = pred_corners[adj1] + pred_corners[adj2] - pred_corners[opp]
+                    pred_corners[i] = np.clip(pred_corners[i], 0.0, 1.0)
+                    print(f"    -> [Recovery] Corner {i} geometrically estimated (Conf: {confidences[i]:.2f})")
+
         pred_corners_pixel = (pred_corners * [w, h]).astype(np.float32)
         gt_corners_pixel = (gt_corners * [w, h]).astype(np.float32)
-        
+
         pred_corners_pixel = order_points(pred_corners_pixel)
         gt_corners_pixel = order_points(gt_corners_pixel)
 
@@ -99,6 +138,7 @@ def main():
         rectified_rgb = cv2.cvtColor(rectified_bgr, cv2.COLOR_BGR2RGB)
 
         rectified_tensor = TF.to_tensor(rectified_rgb).unsqueeze(0).to(device)
+
         with torch.no_grad():
             enhanced_tensor = enhancement_model(rectified_tensor)
             
@@ -124,18 +164,23 @@ def main():
             cv2.circle(vis_raw, pt1_pred, 8, (255, 0, 0), -1)
 
         fig, axes = plt.subplots(1, 4, figsize=(24, 6))
+
         axes[0].imshow(vis_raw)
         axes[0].set_title(f"Corners (GT: Green, Pred: Red)\nCorner MSE: {corner_mse:.1f} px", fontsize=12)
         axes[0].axis('off')
+
         axes[1].imshow(rectified_rgb)
         axes[1].set_title("Perspective Warped (via PRED)", fontsize=12)
         axes[1].axis('off')
+
         axes[2].imshow(enhanced_rgb)
         axes[2].set_title(f"Enhanced Document\nPSNR: {val_psnr:.2f} | SSIM: {val_ssim:.2f}", fontsize=12)
         axes[2].axis('off')
+
         axes[3].imshow(clean_rgb_resized)
         axes[3].set_title("Ground Truth Scan", fontsize=12)
         axes[3].axis('off')
+
         plt.tight_layout()
         
         save_path = os.path.join(output_dir, f"eval_{idx+1:02d}.jpg")
