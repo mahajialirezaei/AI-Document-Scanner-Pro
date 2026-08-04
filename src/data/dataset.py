@@ -209,6 +209,58 @@ class SyntheticDocumentDataset(Dataset):
 
         return result
 
+    def _add_adjacent_page(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        if random.random() > 0.4:
+            return img
+        
+        result = img.copy()
+        h, w = result.shape[:2]
+        is_left = random.random() > 0.5
+        
+        edge_idx = (3, 0) if is_left else (1, 2)
+        pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+        
+        vec = pt2 - pt1
+        normal = np.array([-vec[1], vec[0]]) if is_left else np.array([vec[1], -vec[0]])
+        normal_len = np.linalg.norm(normal)
+        if normal_len == 0: return result
+        normal = normal / normal_len
+        
+        page_width = random.uniform(80, 250)
+        pt3 = pt2 + normal * page_width
+        pt4 = pt1 + normal * page_width
+        
+        page_pts = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
+        cv2.fillPoly(result, [page_pts], (235, 240, 245))
+        
+        for _ in range(random.randint(10, 25)):
+            t1, t2 = random.uniform(0.1, 0.9), random.uniform(0.1, 0.9)
+            line_pt1 = pt1 * (1 - t1) + pt4 * t1
+            line_pt2 = pt2 * (1 - t2) + pt3 * t2
+            cv2.line(result, tuple(line_pt1.astype(int)), tuple(line_pt2.astype(int)), 
+                     (random.randint(30, 80), random.randint(30, 80), random.randint(30, 80)), 
+                     random.randint(2, 4))
+            
+        return result
+
+    def _add_edge_shadows(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        if random.random() > 0.3:
+            return img
+            
+        result = img.copy()
+        overlay = np.zeros_like(result, dtype=np.float32)
+        
+        edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
+        pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+        
+        cv2.line(overlay, tuple(pt1.astype(int)), tuple(pt2.astype(int)), (255, 255, 255), random.randint(40, 120))
+        overlay = cv2.GaussianBlur(overlay, (151, 151), 70)
+        
+        shadow_mask = overlay / 255.0
+        darkening_factor = random.uniform(0.3, 0.7)
+        result = np.clip(result.astype(np.float32) * (1 - shadow_mask * darkening_factor), 0, 255).astype(np.uint8)
+        
+        return result
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
         if rng_state is not None:
             random.setstate(rng_state['random'])
@@ -245,6 +297,8 @@ class SyntheticDocumentDataset(Dataset):
         composite[warped_mask == 255] = warped_scan[warped_mask == 255]
 
         if self.use_degradation:
+            composite = self._add_adjacent_page(composite, dst_pts)
+            composite = self._add_edge_shadows(composite, dst_pts)
             composite = self._add_distractors(composite, dst_pts)
 
         if self.use_degradation and self.degradation_pipeline:

@@ -175,20 +175,48 @@ class SoftArgmax2D(nn.Module):
         
         return torch.stack([expected_x, expected_y], dim=-1)
 
+class AddCoords(nn.Module):
+    def __init__(self, with_r=False):
+        super().__init__()
+        self.with_r = with_r
+
+    def forward(self, input_tensor):
+        batch_size, _, y_dim, x_dim = input_tensor.size()
+
+        xx_channel = torch.arange(x_dim).repeat(1, y_dim, 1)
+        yy_channel = torch.arange(y_dim).repeat(1, x_dim, 1).transpose(1, 2)
+
+        xx_channel = xx_channel.float() / (x_dim - 1)
+        yy_channel = yy_channel.float() / (y_dim - 1)
+
+        xx_channel = xx_channel * 2 - 1
+        yy_channel = yy_channel * 2 - 1
+
+        xx_channel = xx_channel.repeat(batch_size, 1, 1, 1).transpose(2, 3)
+        yy_channel = yy_channel.repeat(batch_size, 1, 1, 1).transpose(2, 3)
+
+        xx_channel = xx_channel.to(input_tensor.device)
+        yy_channel = yy_channel.to(input_tensor.device)
+
+        ret = torch.cat([input_tensor, xx_channel, yy_channel], dim=1)
+
+        if self.with_r:
+            rr = torch.sqrt(torch.pow(xx_channel - 0.5, 2) + torch.pow(yy_channel - 0.5, 2))
+            ret = torch.cat([ret, rr], dim=1)
+
+        return ret
+
 class CornerHeatmapModel(nn.Module):
-    """Task 2: Corner Approach B - Heatmap"""
+    """Task 2: Corner Approach B - Heatmap (With CoordConv)"""
     def __init__(self, n_channels=3, n_classes=4, bilinear=False, dropout_rate=0.0):
         super(CornerHeatmapModel, self).__init__()
-        # Using a U-Net backbone to predict 4 Gaussian heatmaps
-        self.unet = EnhancementUNet(n_channels, n_classes, bilinear, dropout_rate)
-        # Note: EnhancementUNet ends with Sigmoid, which is fine for heatmaps.
-        # If raw logits are preferred for SoftArgmax, we could modify it.
-        # But SoftArgmax typically works on any positive activations or logits.
+        self.addcoords = AddCoords(with_r=False)
+        self.unet = EnhancementUNet(n_channels + 2, n_classes, bilinear, dropout_rate)
         self.soft_argmax = SoftArgmax2D()
 
     def forward(self, x):
-        heatmaps = self.unet(x) # (B, 4, H, W)
-        coords = self.soft_argmax(heatmaps) # (B, 4, 2)
-        # Reshape coords to (B, 8) to match Approach A for easier comparison if needed
+        x_with_coords = self.addcoords(x) 
+        heatmaps = self.unet(x_with_coords) 
+        coords = self.soft_argmax(heatmaps) 
         coords = coords.view(coords.size(0), -1)
         return coords, heatmaps
