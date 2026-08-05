@@ -12,7 +12,7 @@ import random
 class DegradationPipeline:
     """
     A pipeline for applying various degradations to document images.
-    Simulates real-world conditions like blur, noise, perspective distortion, etc.
+    Simulates real-world conditions like blur, noise, perspective distortion, color temp, etc.
     """
     
     def __init__(self, seed: Optional[int] = None):
@@ -30,25 +30,15 @@ class DegradationPipeline:
         """
         Simulate different real-world ink types (blue ballpoint, faded black) 
         by targeting dark pixels.
-        
-        Args:
-            image: Input image (H, W, C) in BGR format
-            
-        Returns:
-            Image with altered ink colors
         """
         degraded = image.copy()
         
-        # Convert to grayscale to identify dark pixels (likely text)
         gray = cv2.cvtColor(degraded, cv2.COLOR_BGR2GRAY)
-        
-        # Create a mask for dark pixels (text usually falls below 130 in brightness)
         mask = gray < 130
         
         if not np.any(mask):
             return degraded
             
-        # Define realistic ink colors in BGR format (OpenCV uses BGR)
         ink_colors = [
             (160, 80, 20),   # Standard Blue pen
             (190, 110, 40),  # Light blue pen
@@ -58,10 +48,8 @@ class DegradationPipeline:
         ]
         chosen_ink = np.array(random.choice(ink_colors), dtype=np.float32)
         
-        # Blend factor (how faded or transparent the ink looks)
         fade_factor = random.uniform(0.4, 0.85)
         
-        # Apply the new ink color to the masked areas
         for c in range(3):
             degraded[mask, c] = np.clip(
                 degraded[mask, c] * (1 - fade_factor) + chosen_ink[c] * fade_factor, 
@@ -70,10 +58,31 @@ class DegradationPipeline:
             
         return degraded
     
+    def apply_color_temperature(self, image: np.ndarray) -> np.ndarray:
+        """
+        Simulate warm (tungsten/yellow) or cool (shade/blue) lighting 
+        by scaling color channels. Fast and lightweight.
+        """
+        degraded = image.copy().astype(np.float32)
+        
+        # 0: Blue, 1: Green, 2: Red in OpenCV (BGR)
+        is_warm = random.random() > 0.5
+        
+        if is_warm:
+            # Warm lighting: Boost Red/Green, Reduce Blue
+            degraded[:, :, 0] *= random.uniform(0.7, 0.95)  # Reduce B
+            degraded[:, :, 1] *= random.uniform(0.95, 1.05) # Slightly alter G
+            degraded[:, :, 2] *= random.uniform(1.05, 1.3)  # Boost R
+        else:
+            # Cool lighting: Boost Blue, Reduce Red
+            degraded[:, :, 0] *= random.uniform(1.05, 1.3)  # Boost B
+            degraded[:, :, 1] *= random.uniform(0.95, 1.05) # Slightly alter G
+            degraded[:, :, 2] *= random.uniform(0.7, 0.95)  # Reduce R
+            
+        return np.clip(degraded, 0, 255).astype(np.uint8)
+
     def apply_motion_blur(self, image: np.ndarray, kernel_size: int = 15, angle: Optional[float] = None) -> np.ndarray:
-        """
-        Apply motion blur to simulate camera shake or movement.
-        """
+        """Apply motion blur to simulate camera shake."""
         if angle is None:
             angle = random.uniform(0, 360)
         
@@ -92,9 +101,7 @@ class DegradationPipeline:
         return degraded
     
     def apply_gaussian_blur(self, image: np.ndarray, kernel_size: int = 5, sigma: float = 0) -> np.ndarray:
-        """
-        Apply Gaussian blur to simulate out-of-focus capture.
-        """
+        """Apply Gaussian blur to simulate out-of-focus capture."""
         if kernel_size % 2 == 0:
             kernel_size += 1
         
@@ -102,40 +109,36 @@ class DegradationPipeline:
         return degraded
     
     def apply_gaussian_noise(self, image: np.ndarray, mean: float = 0, std: float = 25) -> np.ndarray:
-        """
-        Add Gaussian noise to simulate sensor noise.
-        """
+        """Add Gaussian noise to simulate sensor noise."""
         noise = np.random.normal(mean, std, image.shape).astype(np.float32)
         degraded = image.astype(np.float32) + noise
         degraded = np.clip(degraded, 0, 255).astype(np.uint8)
         return degraded
     
     def apply_poisson_noise(self, image: np.ndarray) -> np.ndarray:
-        """
-        Add Poisson noise to simulate photon shot noise.
-        """
+        """Add Poisson noise to simulate photon shot noise."""
         normalized = image.astype(np.float32) / 255.0
         noisy = np.random.poisson(normalized * 255) / 255.0
         degraded = np.clip(noisy * 255, 0, 255).astype(np.uint8)
         return degraded
     
     def apply_jpeg_compression(self, image: np.ndarray, quality: int = 50) -> np.ndarray:
+        """Simulate artifacts from image compression."""
         quality = max(1, min(100, quality))
         encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), quality]
         
         success, encoded = cv2.imencode('.jpg', image, encode_param)
         if not success:
-            print("\n[Warning] JPEG Encode failed. Bypassing augmentation.")
             return image
             
         degraded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
         if degraded is None:
-            print("\n[Warning] JPEG Decode failed. Bypassing augmentation.")
             return image
             
         return degraded
     
     def apply_brightness_change(self, image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
+        """Simulate over or under exposure."""
         if factor is None:
             factor = random.uniform(0.6, 1.15)
         
@@ -144,6 +147,7 @@ class DegradationPipeline:
         return degraded
     
     def apply_contrast_change(self, image: np.ndarray, factor: Optional[float] = None) -> np.ndarray:
+        """Simulate washed out or harsh lighting contrasts."""
         if factor is None:
             factor = random.uniform(0.7, 1.2)
         
@@ -153,10 +157,7 @@ class DegradationPipeline:
         return degraded
 
     def apply_salt_pepper_noise(self, image: np.ndarray, salt_prob: float = 0.003, pepper_prob: float = 0.003) -> np.ndarray:
-        """
-        Add salt-and-pepper noise to simulate dead pixels or dust.
-        Probabilities reduced to prevent structural text damage.
-        """
+        """Add salt-and-pepper noise to simulate dead pixels or dust."""
         degraded = image.copy()
         h, w = degraded.shape[:2]
         
@@ -176,11 +177,8 @@ class DegradationPipeline:
         
         return degraded
 
-    
     def apply_shadow(self, image: np.ndarray, num_shadows: int = 1) -> np.ndarray:
-        """
-        Add soft shadow effects to simulate uneven lighting.
-        """
+        """Add soft shadow effects to simulate uneven lighting."""
         degraded = image.copy().astype(np.float32)
         h, w = degraded.shape[:2]
         
@@ -206,9 +204,7 @@ class DegradationPipeline:
         return np.clip(degraded, 0, 255).astype(np.uint8)
     
     def apply_resolution_loss(self, image: np.ndarray, scale_factor: Optional[float] = None) -> np.ndarray:
-        """
-        Apply resolution loss by downscaling and upscaling to simulate camera distance.
-        """
+        """Apply resolution loss by downscaling and upscaling to simulate camera distance."""
         h, w = image.shape[:2]
         
         if scale_factor is None:
@@ -222,9 +218,7 @@ class DegradationPipeline:
     
     def apply_random_degradation(self, image: np.ndarray, 
                                   num_degradations: int = 4) -> np.ndarray:
-        """
-        Apply a random combination of degradations.
-        """
+        """Apply a random combination of degradations."""
         degradation_funcs = [
             lambda x: self.apply_motion_blur(x),
             lambda x: self.apply_gaussian_blur(x),
@@ -233,6 +227,7 @@ class DegradationPipeline:
             lambda x: self.apply_jpeg_compression(x, quality=random.randint(30, 80)),
             lambda x: self.apply_brightness_change(x),
             lambda x: self.apply_contrast_change(x),
+            lambda x: self.apply_color_temperature(x), # NEW: Temperature Shift Added
             lambda x: self.apply_shadow(x, num_shadows=random.randint(1, 2)),
             lambda x: self.apply_resolution_loss(x),
         ]
