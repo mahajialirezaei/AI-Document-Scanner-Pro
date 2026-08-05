@@ -78,7 +78,6 @@ class SyntheticDocumentDataset(Dataset):
         return pts
 
     def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.25) -> np.ndarray:
-        """Applies gutter shadows and spirals to the flat scan before warping."""
         if not self.use_degradation or random.random() > probability:
             return img
             
@@ -104,8 +103,8 @@ class SyntheticDocumentDataset(Dataset):
             result = np.where(mask, overlay, result)
                 
         elif art_type == 'gutter_shadow':
-            shadow_width = random.randint(60, 150) # Increased width for stronger effect
-            gradient = np.linspace(0.2, 1.0, shadow_width).reshape(1, shadow_width, 1) # Darker starting point
+            shadow_width = random.randint(60, 150)
+            gradient = np.linspace(0.2, 1.0, shadow_width).reshape(1, shadow_width, 1)
             
             if side == 'left':
                 result[:, :shadow_width] = np.clip(result[:, :shadow_width] * gradient, 0, 255).astype(np.uint8)
@@ -116,20 +115,13 @@ class SyntheticDocumentDataset(Dataset):
         return result
 
     def _add_binder_margins(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        """Simulates a thick binder folder extending outside the document edges."""
         if random.random() > 0.25:
             return img
             
         result = img.copy()
         overlay = np.zeros_like(result)
         
-        color = random.choice([
-            (20, 20, 20),      
-            (100, 30, 30),     
-            (20, 40, 120),     
-            (180, 180, 180)    
-        ])
-        
+        color = random.choice([(20, 20, 20), (100, 30, 30), (20, 40, 120), (180, 180, 180)])
         edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
         random.shuffle(edges)
         
@@ -173,7 +165,7 @@ class SyntheticDocumentDataset(Dataset):
         if normal_len == 0: return result
         
         normal = np.array([-vec[1], vec[0]]) if is_left else np.array([vec[1], -vec[0]])
-        normal = normal / np.linalg.norm(normal)
+        normal = normal / normal_len
         
         page_width = random.uniform(100, 300)
         pt3 = pt2 + normal * page_width
@@ -198,7 +190,6 @@ class SyntheticDocumentDataset(Dataset):
         return result
 
     def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        """Adds extreme occlusion distractors (fingers, objects) directly on the corners."""
         result = img.copy()
         
         if random.random() < 0.2:
@@ -232,6 +223,105 @@ class SyntheticDocumentDataset(Dataset):
             mask = np.any(overlay > 0, axis=2)[..., None]
             result = np.where(mask, overlay, result)
             
+        return result
+
+    def _add_3d_shadow_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Adds 3D objects casting drop shadows near document boundaries."""
+        if random.random() > 0.3:
+            return img
+        
+        result = img.copy()
+        for _ in range(random.randint(1, 2)):
+            overlay = np.zeros_like(result)
+            shadow_overlay = np.zeros_like(result)
+            
+            edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
+            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+            
+            t = random.uniform(0.1, 0.9)
+            center = pt1 * (1 - t) + pt2 * t
+            
+            poly_pts = []
+            for _ in range(random.randint(4, 7)):
+                offset_x = random.uniform(-90, 90)
+                offset_y = random.uniform(-90, 90)
+                poly_pts.append([center[0] + offset_x, center[1] + offset_y])
+            poly = np.array(poly_pts, dtype=np.int32)
+            
+            shadow_offset = np.array([random.uniform(8, 20), random.uniform(8, 20)])
+            shadow_poly = poly + shadow_offset.astype(np.int32)
+            
+            cv2.fillPoly(shadow_overlay, [shadow_poly], (15, 15, 15))
+            shadow_overlay = cv2.GaussianBlur(shadow_overlay, (25, 25), 12)
+            
+            obj_color = (random.randint(30, 200), random.randint(30, 200), random.randint(30, 200))
+            cv2.fillPoly(overlay, [poly], obj_color)
+            
+            mask_shadow = np.any(shadow_overlay > 0, axis=2)[..., None]
+            result = np.where(mask_shadow, (shadow_overlay * 0.6 + result * 0.4).astype(np.uint8), result)
+            
+            mask_obj = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask_obj, overlay, result)
+            
+        return result
+
+    def _add_camouflage_polygons(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Injects white/off-white distractors to force reliance on edge structure rather than color."""
+        if random.random() > 0.25:
+            return img
+            
+        result = img.copy()
+        overlay = np.zeros_like(result)
+        
+        edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
+        pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+        t = random.uniform(0.2, 0.8)
+        center = pt1 * (1 - t) + pt2 * t
+        
+        poly_pts = []
+        for _ in range(random.randint(4, 8)):
+            offset_x = random.uniform(-110, 110)
+            offset_y = random.uniform(-110, 110)
+            poly_pts.append([center[0] + offset_x, center[1] + offset_y])
+            
+        poly = np.array(poly_pts, dtype=np.int32)
+        camo_color = (random.randint(220, 255), random.randint(220, 255), random.randint(220, 255))
+        cv2.fillPoly(overlay, [poly], camo_color)
+        
+        overlay = cv2.GaussianBlur(overlay, (5, 5), 2)
+        mask = np.any(overlay > 0, axis=2)[..., None]
+        result = np.where(mask, overlay, result)
+        return result
+
+    def _add_corner_occlusions(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Places dark, soft-edged blocks explicitly severing document corners."""
+        if random.random() > 0.25:
+            return img
+            
+        result = img.copy()
+        overlay = np.zeros_like(result)
+        
+        corner_idx = random.randint(0, 3)
+        c_pt = corners[corner_idx]
+        
+        w, h = random.randint(120, 250), random.randint(120, 250)
+        shift_x = random.uniform(-w/3, w/3)
+        shift_y = random.uniform(-h/3, h/3)
+        
+        pt1 = [c_pt[0] - w/2 + shift_x, c_pt[1] - h/2 + shift_y]
+        pt2 = [c_pt[0] + w/2 + shift_x, c_pt[1] - h/2 + shift_y]
+        pt3 = [c_pt[0] + w/2 + shift_x, c_pt[1] + h/2 + shift_y]
+        pt4 = [c_pt[0] - w/2 + shift_x, c_pt[1] + h/2 + shift_y]
+        
+        poly = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
+        
+        dark_color = (random.randint(5, 45), random.randint(5, 45), random.randint(5, 45))
+        cv2.fillPoly(overlay, [poly], dark_color)
+        
+        overlay = cv2.GaussianBlur(overlay, (15, 15), 5)
+        mask = np.any(overlay > 0, axis=2)[..., None]
+        result = np.where(mask, overlay, result)
+        
         return result
 
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
@@ -273,6 +363,9 @@ class SyntheticDocumentDataset(Dataset):
             composite = self._add_binder_margins(composite, dst_pts)
             composite = self._add_adjacent_page(composite, dst_pts)
             composite = self._add_distractors(composite, dst_pts)
+            composite = self._add_3d_shadow_distractors(composite, dst_pts)
+            composite = self._add_camouflage_polygons(composite, dst_pts)
+            composite = self._add_corner_occlusions(composite, dst_pts)
 
         if self.use_degradation and self.degradation_pipeline:
             degraded_composite = self.degradation_pipeline.apply_random_degradation(composite)
