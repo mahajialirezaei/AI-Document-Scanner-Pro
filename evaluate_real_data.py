@@ -52,7 +52,7 @@ def main():
     enhancement_model.eval()
 
     corner_model = CornerHeatmapModel(dropout_rate=0.2).to(device)
-    corner_ckpt = torch.load('checkpoints/corner_heatmap/best_model.pth', map_location=device, weights_only=True)
+    corner_ckpt = torch.load('checkpoints/corner_heatmap_coordconv/best_model.pth', map_location=device, weights_only=True)
     
     state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
     if list(state_dict.keys())[0].startswith('module.'):
