@@ -149,7 +149,7 @@ class CornerRegressionModel(nn.Module):
         return x
 
 class SoftArgmax2D(nn.Module):
-    def __init__(self, beta=100.0):
+    def __init__(self, beta=300.0):
         super(SoftArgmax2D, self).__init__()
         self.beta = beta
 
