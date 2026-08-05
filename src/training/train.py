@@ -402,7 +402,7 @@ if __name__ == '__main__':
             image_size=(args.image_size, args.image_size),
             seed=args.seed,
             num_eval_samples=100,
-            train_samples_per_epoch=800
+            train_samples_per_epoch=3500
         )
     except Exception as e:
         print(f"Error loading datasets: {e}")
