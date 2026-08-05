@@ -1,6 +1,7 @@
 """
 Degradation pipeline for document images using OpenCV.
-Implements various degradation functions to simulate real-world document conditions.
+Implements various degradation functions to simulate real-world document conditions,
+including 3D physical paper curl (Elastic Transform).
 """
 
 import cv2
@@ -12,7 +13,7 @@ import random
 class DegradationPipeline:
     """
     A pipeline for applying various degradations to document images.
-    Simulates real-world conditions like blur, noise, perspective distortion, color temp, etc.
+    Simulates real-world conditions like blur, noise, perspective distortion, color temp, and physical curl.
     """
     
     def __init__(self, seed: Optional[int] = None):
@@ -215,6 +216,28 @@ class DegradationPipeline:
         upscaled = cv2.resize(downscaled, (w, h), interpolation=cv2.INTER_LINEAR)
         
         return upscaled
+        
+    def apply_elastic_transform(self, image: np.ndarray, alpha: Optional[float] = None, sigma: Optional[float] = None) -> np.ndarray:
+        """
+        Apply elastic transformation to simulate 3D paper curl and page warping.
+        Creates a randomized smooth displacement field to warp the image non-linearly.
+        """
+        shape = image.shape[:2]
+        
+        if alpha is None:
+            alpha = shape[1] * random.uniform(0.015, 0.035)
+        if sigma is None:
+            sigma = shape[1] * random.uniform(0.05, 0.1)
+            
+        dx = cv2.GaussianBlur((np.random.rand(*shape) * 2 - 1).astype(np.float32), (0, 0), sigma) * alpha
+        dy = cv2.GaussianBlur((np.random.rand(*shape) * 2 - 1).astype(np.float32), (0, 0), sigma) * alpha
+        
+        x, y = np.meshgrid(np.arange(shape[1]), np.arange(shape[0]))
+        map_x = np.float32(x + dx)
+        map_y = np.float32(y + dy)
+        
+        degraded = cv2.remap(image, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+        return degraded
     
     def apply_random_degradation(self, image: np.ndarray, 
                                   num_degradations: int = 4) -> np.ndarray:
@@ -227,9 +250,10 @@ class DegradationPipeline:
             lambda x: self.apply_jpeg_compression(x, quality=random.randint(30, 80)),
             lambda x: self.apply_brightness_change(x),
             lambda x: self.apply_contrast_change(x),
-            lambda x: self.apply_color_temperature(x), # NEW: Temperature Shift Added
+            lambda x: self.apply_color_temperature(x),
             lambda x: self.apply_shadow(x, num_shadows=random.randint(1, 2)),
             lambda x: self.apply_resolution_loss(x),
+            lambda x: self.apply_elastic_transform(x)
         ]
 
         num_to_apply = min(num_degradations, len(degradation_funcs))
