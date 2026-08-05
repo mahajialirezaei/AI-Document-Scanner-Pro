@@ -77,30 +77,28 @@ class SyntheticDocumentDataset(Dataset):
         pts = np.array([[tl_x, tl_y], [tr_x, tr_y], [br_x, br_y], [bl_x, bl_y]], dtype=np.float32)
         return pts
 
-    def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.25) -> np.ndarray:
-        if not self.use_degradation or random.random() > probability:
-            return img
-            
+    def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
+        """Upgraded: Returns the image and a hole_mask for true spiral cutouts."""
         h, w = img.shape[:2]
+        hole_mask = np.ones((h, w), dtype=np.uint8) * 255
+        
+        if not self.use_degradation or random.random() > probability:
+            return img, hole_mask
+            
         art_type = random.choice(['spiral', 'gutter_shadow'])
         side = random.choice(['left', 'right'])
         
         result = img.copy()
         
         if art_type == 'spiral':
-            overlay = np.zeros_like(result)
             num_holes = random.randint(20, 40)
             y_steps = np.linspace(10, h - 10, num_holes)
             x_pos = random.randint(15, 35) if side == 'left' else w - random.randint(15, 35)
             
             for y in y_steps:
                 radius = random.randint(4, 9)
-                cv2.circle(overlay, (x_pos, int(y)), radius, (30, 30, 30), -1)
-                cv2.line(overlay, (x_pos, int(y)), (x_pos + random.randint(-15, 15), int(y)), (150, 150, 150), 3)
-            
-            overlay = cv2.GaussianBlur(overlay, (5, 5), 2)
-            mask = np.any(overlay > 0, axis=2)[..., None]
-            result = np.where(mask, overlay, result)
+                cv2.circle(hole_mask, (x_pos, int(y)), radius, 0, -1)
+                cv2.line(result, (x_pos, int(y)), (x_pos + random.randint(-20, 20), int(y)), (120, 120, 120), 4)
                 
         elif art_type == 'gutter_shadow':
             shadow_width = random.randint(60, 150)
@@ -112,7 +110,7 @@ class SyntheticDocumentDataset(Dataset):
                 gradient = np.flip(gradient, axis=1)
                 result[:, -shadow_width:] = np.clip(result[:, -shadow_width:] * gradient, 0, 255).astype(np.uint8)
                 
-        return result
+        return result, hole_mask
 
     def _add_binder_margins(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
         if random.random() > 0.25:
@@ -226,7 +224,6 @@ class SyntheticDocumentDataset(Dataset):
         return result
 
     def _add_3d_shadow_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        """Adds 3D objects casting drop shadows near document boundaries."""
         if random.random() > 0.3:
             return img
         
@@ -266,7 +263,6 @@ class SyntheticDocumentDataset(Dataset):
         return result
 
     def _add_camouflage_polygons(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        """Injects white/off-white distractors to force reliance on edge structure rather than color."""
         if random.random() > 0.25:
             return img
             
@@ -294,7 +290,6 @@ class SyntheticDocumentDataset(Dataset):
         return result
 
     def _add_corner_occlusions(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        """Places dark, soft-edged blocks explicitly severing document corners."""
         if random.random() > 0.25:
             return img
             
@@ -315,10 +310,45 @@ class SyntheticDocumentDataset(Dataset):
         
         poly = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
         
+        # Harder edges for occluding objects
         dark_color = (random.randint(5, 45), random.randint(5, 45), random.randint(5, 45))
         cv2.fillPoly(overlay, [poly], dark_color)
         
-        overlay = cv2.GaussianBlur(overlay, (15, 15), 5)
+        overlay = cv2.GaussianBlur(overlay, (5, 5), 2) # Reduced blur to simulate hard objects
+        mask = np.any(overlay > 0, axis=2)[..., None]
+        result = np.where(mask, overlay, result)
+        
+        return result
+
+    def _add_clothing_occlusions(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Simulates large occlusions like clothing sleeves or arms (Strictly ~15%)."""
+        if random.random() > 0.15:
+            return img
+            
+        result = img.copy()
+        overlay = np.zeros_like(result)
+        
+        # Simulate clothing colors (Yellow, Blue, Grey, Dark red)
+        color = random.choice([(40, 200, 240), (200, 100, 40), (120, 120, 120), (50, 50, 150)])
+        
+        # Usually arms appear from the bottom (2, 3) or right (1, 2)
+        edge_idx = random.choice([(1, 2), (2, 3)])
+        pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+        
+        t = random.uniform(0.3, 0.7)
+        center = pt1 * (1 - t) + pt2 * t
+        
+        poly_pts = []
+        for _ in range(random.randint(5, 8)):
+            offset_x = random.uniform(-250, 250)
+            offset_y = random.uniform(-250, 250)
+            poly_pts.append([center[0] + offset_x, center[1] + offset_y])
+            
+        poly = np.array(poly_pts, dtype=np.int32)
+        cv2.fillPoly(overlay, [poly], color)
+        
+        # Soft edges for clothing
+        overlay = cv2.GaussianBlur(overlay, (21, 21), 10)
         mask = np.any(overlay > 0, axis=2)[..., None]
         result = np.where(mask, overlay, result)
         
@@ -333,13 +363,15 @@ class SyntheticDocumentDataset(Dataset):
         bg_path = random.choice(self.backgrounds)
         clean_scan = cv2.imread(str(scan_path))
         
-        clean_scan = self._add_binding_artifacts(clean_scan, probability=0.30)
+        # Extract both the scan and the hole mask
+        clean_scan, hole_mask = self._add_binding_artifacts(clean_scan, probability=0.30)
         
         if self.use_degradation and self.degradation_pipeline:
             clean_scan = self.degradation_pipeline.apply_ink_simulation(clean_scan)
             
         clean_scan = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2RGB)
         clean_scan = cv2.resize(clean_scan, (self.image_size[1], self.image_size[0]))
+        hole_mask = cv2.resize(hole_mask, (self.image_size[1], self.image_size[0]), interpolation=cv2.INTER_NEAREST)
         scan_h, scan_w = clean_scan.shape[:2]
         
         bg_image = cv2.imread(str(bg_path))
@@ -353,8 +385,8 @@ class SyntheticDocumentDataset(Dataset):
         H = cv2.getPerspectiveTransform(src_pts, dst_pts)
         warped_scan = cv2.warpPerspective(clean_scan, H, (bg_w, bg_h))
         
-        mask = np.ones((scan_h, scan_w), dtype=np.uint8) * 255
-        warped_mask = cv2.warpPerspective(mask, H, (bg_w, bg_h))
+        # Warp the transparent holes mask instead of a plain white mask
+        warped_mask = cv2.warpPerspective(hole_mask, H, (bg_w, bg_h), flags=cv2.INTER_NEAREST)
         
         composite = bg_image.copy()
         composite[warped_mask == 255] = warped_scan[warped_mask == 255]
@@ -366,6 +398,7 @@ class SyntheticDocumentDataset(Dataset):
             composite = self._add_3d_shadow_distractors(composite, dst_pts)
             composite = self._add_camouflage_polygons(composite, dst_pts)
             composite = self._add_corner_occlusions(composite, dst_pts)
+            composite = self._add_clothing_occlusions(composite, dst_pts)
 
         if self.use_degradation and self.degradation_pipeline:
             degraded_composite = self.degradation_pipeline.apply_random_degradation(composite)
