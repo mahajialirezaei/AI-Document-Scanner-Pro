@@ -77,7 +77,8 @@ class SyntheticDocumentDataset(Dataset):
         pts = np.array([[tl_x, tl_y], [tr_x, tr_y], [br_x, br_y], [bl_x, bl_y]], dtype=np.float32)
         return pts
 
-    def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.20) -> np.ndarray:
+    def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.25) -> np.ndarray:
+        """Applies gutter shadows and spirals to the flat scan before warping."""
         if not self.use_degradation or random.random() > probability:
             return img
             
@@ -103,8 +104,8 @@ class SyntheticDocumentDataset(Dataset):
             result = np.where(mask, overlay, result)
                 
         elif art_type == 'gutter_shadow':
-            shadow_width = random.randint(40, 120)
-            gradient = np.linspace(0.4, 1.0, shadow_width).reshape(1, shadow_width, 1)
+            shadow_width = random.randint(60, 150) # Increased width for stronger effect
+            gradient = np.linspace(0.2, 1.0, shadow_width).reshape(1, shadow_width, 1) # Darker starting point
             
             if side == 'left':
                 result[:, :shadow_width] = np.clip(result[:, :shadow_width] * gradient, 0, 255).astype(np.uint8)
@@ -114,153 +115,125 @@ class SyntheticDocumentDataset(Dataset):
                 
         return result
 
-    def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    def _add_binder_margins(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Simulates a thick binder folder extending outside the document edges."""
+        if random.random() > 0.25:
+            return img
+            
         result = img.copy()
-        center = np.mean(corners, axis=0)
+        overlay = np.zeros_like(result)
         
-        if random.random() < 0.08:
-            overlay = np.zeros_like(result)
-            edge_idx = random.choice([(3, 0), (1, 2)])
+        color = random.choice([
+            (20, 20, 20),      
+            (100, 30, 30),     
+            (20, 40, 120),     
+            (180, 180, 180)    
+        ])
+        
+        edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
+        random.shuffle(edges)
+        
+        center = np.mean(corners, axis=0)
+        thickness = random.randint(30, 120)
+        
+        for edge_idx in edges[:random.randint(1, 2)]:
             pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
             vec = pt2 - pt1
             length = np.linalg.norm(vec)
-            if length > 0:
-                dir_vec = vec / length
-                normal = np.array([-dir_vec[1], dir_vec[0]])
-                if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
-                    normal = -normal
-                offset_dist = random.uniform(15, 30)
-                pt1_offset = pt1 + normal * offset_dist
-                pt2_offset = pt2 + normal * offset_dist
-                num_rings = int(length // random.uniform(15, 30))
-                for i in range(1, max(2, num_rings)):
-                    t = i / num_rings
-                    ring_pt = pt1_offset * (1 - t) + pt2_offset * t
-                    color = (random.randint(10, 50), random.randint(10, 50), random.randint(10, 50))
-                    cv2.circle(overlay, (int(ring_pt[0]), int(ring_pt[1])), random.randint(4, 12), color, -1)
-            overlay = cv2.GaussianBlur(overlay, (7, 7), 3)
-            mask = np.any(overlay > 0, axis=2)[..., None]
-            result = np.where(mask, overlay, result)
-
-        if random.random() < 0.08:
-            overlay = np.zeros_like(result)
-            thickness = random.randint(40, 100)
-            color = (random.randint(0, 30), random.randint(0, 30), random.randint(0, 30))
-            edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
-            random.shuffle(edges)
-            for edge_idx in edges[:random.randint(1, 2)]:
-                pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
-                vec = pt2 - pt1
-                if np.linalg.norm(vec) > 0:
-                    normal = np.array([-vec[1], vec[0]])
-                    normal = normal / np.linalg.norm(normal)
-                    if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
-                        normal = -normal
-                    offset = (thickness // 2) + 2
-                    pt1_out = pt1 + normal * offset
-                    pt2_out = pt2 + normal * offset
-                    cv2.line(overlay, tuple(pt1_out.astype(int)), tuple(pt2_out.astype(int)), color, thickness)
-            overlay = cv2.GaussianBlur(overlay, (21, 21), 10)
-            mask = np.any(overlay > 0, axis=2)[..., None]
-            result = np.where(mask, overlay, result)
-
-        if random.random() < 0.08:
-            overlay = np.zeros_like(result)
-            poly_pts = corners.copy()
-            poly_pts[:, 0] += np.random.uniform(-30, 30, 4)
-            poly_pts[:, 1] += np.random.uniform(-30, 30, 4)
-            cv2.fillPoly(overlay, [poly_pts.astype(np.int32)], (255, 255, 255))
-            overlay = cv2.GaussianBlur(overlay, (51, 51), 20)
-            alpha = random.uniform(0.1, 0.25)
-            result = cv2.addWeighted(overlay, alpha, result, 1, 0)
-
-        if random.random() < 0.08:
-            overlay = np.zeros_like(result)
-            edge_idx = random.choice([(3, 0), (1, 2)]) 
-            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
-            cv2.line(overlay, tuple(pt1.astype(int)), tuple(pt2.astype(int)), (255, 255, 255), random.randint(60, 100))
-            overlay = cv2.GaussianBlur(overlay, (101, 101), 40)
-            shadow_mask = overlay.astype(np.float32) / 255.0
-            result = np.clip(result.astype(np.float32) * (1 - shadow_mask * 0.5), 0, 255).astype(np.uint8)
-
-        if random.random() < 0.08:
-            overlay = np.zeros_like(result)
-            edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
-            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
-            t = random.uniform(0.2, 0.8)
-            finger_center = pt1 * (1 - t) + pt2 * t
-            skin_color = (random.randint(110, 160), random.randint(140, 190), random.randint(190, 230))
-            cv2.circle(overlay, tuple(finger_center.astype(int)), random.randint(25, 40), skin_color, -1)
-            # Soften finger edges
-            overlay = cv2.GaussianBlur(overlay, (15, 15), 5)
-            mask = np.any(overlay > 0, axis=2)[..., None]
-            result = np.where(mask, overlay, result)
-
-        if random.random() < 0.08:
-            overlay = np.zeros_like(result)
-            h, w = result.shape[:2]
-            for _ in range(random.randint(1, 3)):
-                pt1 = (random.randint(0, w), random.randint(0, h))
-                pt2 = (random.randint(0, w), random.randint(0, h))
-                cv2.line(overlay, pt1, pt2, (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)), random.randint(2, 10))
-            overlay = cv2.GaussianBlur(overlay, (7, 7), 3)
-            mask = np.any(overlay > 0, axis=2)[..., None]
-            result = np.where(mask, overlay, result)
-
+            if length == 0: continue
+            
+            normal = np.array([-vec[1], vec[0]]) / length
+            if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
+                normal = -normal
+                
+            pt3 = pt2 + normal * thickness
+            pt4 = pt1 + normal * thickness
+            
+            poly = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
+            cv2.fillPoly(overlay, [poly], color)
+            
+        overlay = cv2.GaussianBlur(overlay, (7, 7), 3)
+        mask = np.any(overlay > 0, axis=2)[..., None]
+        result = np.where(mask, overlay, result)
+        
         return result
 
     def _add_adjacent_page(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        if random.random() > 0.4:
+        if random.random() > 0.3:
             return img
         
         result = img.copy()
-        h, w = result.shape[:2]
         is_left = random.random() > 0.5
         
         edge_idx = (3, 0) if is_left else (1, 2)
         pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
         
         vec = pt2 - pt1
-        normal = np.array([-vec[1], vec[0]]) if is_left else np.array([vec[1], -vec[0]])
-        normal_len = np.linalg.norm(normal)
+        normal_len = np.linalg.norm(vec)
         if normal_len == 0: return result
-        normal = normal / normal_len
         
-        page_width = random.uniform(80, 250)
+        normal = np.array([-vec[1], vec[0]]) if is_left else np.array([vec[1], -vec[0]])
+        normal = normal / np.linalg.norm(normal)
+        
+        page_width = random.uniform(100, 300)
         pt3 = pt2 + normal * page_width
         pt4 = pt1 + normal * page_width
         
         page_pts = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
-        cv2.fillPoly(result, [page_pts], (235, 240, 245))
         
-        for _ in range(random.randint(10, 25)):
-            t1, t2 = random.uniform(0.1, 0.9), random.uniform(0.1, 0.9)
+        page_color = (random.randint(220, 245), random.randint(225, 250), random.randint(230, 255))
+        cv2.fillPoly(result, [page_pts], page_color)
+        
+        for _ in range(random.randint(15, 30)):
+            t1, t2 = random.uniform(0.05, 0.95), random.uniform(0.05, 0.95)
             line_pt1 = pt1 * (1 - t1) + pt4 * t1
             line_pt2 = pt2 * (1 - t2) + pt3 * t2
+            
+            line_color = (random.randint(30, 80), random.randint(30, 80), random.randint(30, 80))
             cv2.line(result, tuple(line_pt1.astype(int)), tuple(line_pt2.astype(int)), 
-                     (random.randint(30, 80), random.randint(30, 80), random.randint(30, 80)), 
-                     random.randint(2, 4))
+                     line_color, random.randint(2, 4))
+                     
+        cv2.line(result, tuple(pt1.astype(int)), tuple(pt2.astype(int)), (20, 20, 20), random.randint(8, 15))
             
         return result
 
-    def _add_edge_shadows(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        if random.random() > 0.3:
-            return img
-            
+    def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
+        """Adds extreme occlusion distractors (fingers, objects) directly on the corners."""
         result = img.copy()
-        overlay = np.zeros_like(result, dtype=np.float32)
         
-        edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
-        pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
-        
-        cv2.line(overlay, tuple(pt1.astype(int)), tuple(pt2.astype(int)), (255, 255, 255), random.randint(40, 120))
-        overlay = cv2.GaussianBlur(overlay, (151, 151), 70)
-        
-        shadow_mask = overlay / 255.0
-        darkening_factor = random.uniform(0.3, 0.7)
-        result = np.clip(result.astype(np.float32) * (1 - shadow_mask * darkening_factor), 0, 255).astype(np.uint8)
-        
+        if random.random() < 0.2:
+            overlay = np.zeros_like(result)
+            corner_idx = random.randint(0, 3)
+            c_pt = corners[corner_idx]
+            
+            poly_pts = []
+            for _ in range(random.randint(3, 5)):
+                offset_x = random.uniform(-60, 60)
+                offset_y = random.uniform(-60, 60)
+                poly_pts.append([c_pt[0] + offset_x, c_pt[1] + offset_y])
+                
+            color = (random.randint(10, 200), random.randint(10, 200), random.randint(10, 200))
+            cv2.fillPoly(overlay, [np.array(poly_pts, dtype=np.int32)], color)
+            overlay = cv2.GaussianBlur(overlay, (9, 9), 0)
+            
+            mask = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask, overlay, result)
+
+        if random.random() < 0.15:
+            overlay = np.zeros_like(result)
+            edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
+            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+            t = random.uniform(0.1, 0.9)
+            finger_center = pt1 * (1 - t) + pt2 * t
+            skin_color = (random.randint(110, 160), random.randint(140, 190), random.randint(190, 230))
+            cv2.circle(overlay, tuple(finger_center.astype(int)), random.randint(30, 50), skin_color, -1)
+            
+            overlay = cv2.GaussianBlur(overlay, (15, 15), 5)
+            mask = np.any(overlay > 0, axis=2)[..., None]
+            result = np.where(mask, overlay, result)
+            
         return result
+
     def _generate_single_sample(self, idx: int, rng_state: Optional[dict] = None) -> Dict[str, Any]:
         if rng_state is not None:
             random.setstate(rng_state['random'])
@@ -270,7 +243,7 @@ class SyntheticDocumentDataset(Dataset):
         bg_path = random.choice(self.backgrounds)
         clean_scan = cv2.imread(str(scan_path))
         
-        clean_scan = self._add_binding_artifacts(clean_scan, probability=0.20)
+        clean_scan = self._add_binding_artifacts(clean_scan, probability=0.30)
         
         if self.use_degradation and self.degradation_pipeline:
             clean_scan = self.degradation_pipeline.apply_ink_simulation(clean_scan)
@@ -297,8 +270,8 @@ class SyntheticDocumentDataset(Dataset):
         composite[warped_mask == 255] = warped_scan[warped_mask == 255]
 
         if self.use_degradation:
+            composite = self._add_binder_margins(composite, dst_pts)
             composite = self._add_adjacent_page(composite, dst_pts)
-            composite = self._add_edge_shadows(composite, dst_pts)
             composite = self._add_distractors(composite, dst_pts)
 
         if self.use_degradation and self.degradation_pipeline:
