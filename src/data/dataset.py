@@ -310,44 +310,58 @@ class SyntheticDocumentDataset(Dataset):
         
         poly = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
         
-        # Harder edges for occluding objects
         dark_color = (random.randint(5, 45), random.randint(5, 45), random.randint(5, 45))
         cv2.fillPoly(overlay, [poly], dark_color)
         
-        overlay = cv2.GaussianBlur(overlay, (5, 5), 2) # Reduced blur to simulate hard objects
+        overlay = cv2.GaussianBlur(overlay, (5, 5), 2)
         mask = np.any(overlay > 0, axis=2)[..., None]
         result = np.where(mask, overlay, result)
         
         return result
 
     def _add_clothing_occlusions(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        """Simulates large occlusions like clothing sleeves or arms (Strictly ~15%)."""
+        """
+        Simulates clothing sleeves/arms (10-15%).
+        Engineered to originate from the background and only clip the document margin (10-30 pixels).
+        """
         if random.random() > 0.15:
             return img
             
         result = img.copy()
         overlay = np.zeros_like(result)
         
-        # Simulate clothing colors (Yellow, Blue, Grey, Dark red)
         color = random.choice([(40, 200, 240), (200, 100, 40), (120, 120, 120), (50, 50, 150)])
         
-        # Usually arms appear from the bottom (2, 3) or right (1, 2)
         edge_idx = random.choice([(1, 2), (2, 3)])
         pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
         
-        t = random.uniform(0.3, 0.7)
-        center = pt1 * (1 - t) + pt2 * t
+        vec = pt2 - pt1
+        length = np.linalg.norm(vec)
+        if length == 0: return img
+        
+        normal = np.array([-vec[1], vec[0]]) / length
+        center_doc = np.mean(corners, axis=0)
+        edge_center = (pt1 + pt2) / 2.0
+        
+        if np.dot(normal, edge_center - center_doc) < 0:
+            normal = -normal
+            
+        t = random.uniform(0.2, 0.8)
+        edge_pt = pt1 * (1 - t) + pt2 * t
+        
+        dist_outside = random.uniform(80, 150)
+        sleeve_center = edge_pt + normal * dist_outside
         
         poly_pts = []
         for _ in range(random.randint(5, 8)):
-            offset_x = random.uniform(-250, 250)
-            offset_y = random.uniform(-250, 250)
-            poly_pts.append([center[0] + offset_x, center[1] + offset_y])
+            radius = dist_outside + random.uniform(10, 30)
+            angle = random.uniform(0, 2 * np.pi)
+            poly_pts.append([sleeve_center[0] + radius * np.cos(angle), 
+                             sleeve_center[1] + radius * np.sin(angle)])
             
         poly = np.array(poly_pts, dtype=np.int32)
         cv2.fillPoly(overlay, [poly], color)
         
-        # Soft edges for clothing
         overlay = cv2.GaussianBlur(overlay, (21, 21), 10)
         mask = np.any(overlay > 0, axis=2)[..., None]
         result = np.where(mask, overlay, result)
@@ -363,7 +377,6 @@ class SyntheticDocumentDataset(Dataset):
         bg_path = random.choice(self.backgrounds)
         clean_scan = cv2.imread(str(scan_path))
         
-        # Extract both the scan and the hole mask
         clean_scan, hole_mask = self._add_binding_artifacts(clean_scan, probability=0.30)
         
         if self.use_degradation and self.degradation_pipeline:
@@ -385,7 +398,6 @@ class SyntheticDocumentDataset(Dataset):
         H = cv2.getPerspectiveTransform(src_pts, dst_pts)
         warped_scan = cv2.warpPerspective(clean_scan, H, (bg_w, bg_h))
         
-        # Warp the transparent holes mask instead of a plain white mask
         warped_mask = cv2.warpPerspective(hole_mask, H, (bg_w, bg_h), flags=cv2.INTER_NEAREST)
         
         composite = bg_image.copy()
