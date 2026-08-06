@@ -16,14 +16,28 @@ def tensor_to_rgb(tensor: torch.Tensor) -> np.ndarray:
     return img
 
 def order_points(pts: np.ndarray) -> np.ndarray:
+    """
+    Sorts corners in clockwise order (Top-Left, Top-Right, Bottom-Right, Bottom-Left)
+    using polar coordinates (arctan2) relative to the centroid.
+    This eliminates the "Butterfly Effect" sorting bug completely.
+    """
     if len(pts) != 4:
         return pts
-    y_sorted = pts[np.argsort(pts[:, 1])]
-    top_half = y_sorted[:2, :]
-    bottom_half = y_sorted[2:, :]
-    tl, tr = top_half[np.argsort(top_half[:, 0])]
-    bl, br = bottom_half[np.argsort(bottom_half[:, 0])]
-    return np.array([tl, tr, br, bl], dtype=np.float32)
+        
+    centroid = np.mean(pts, axis=0)
+    
+    # Calculate angles using arctan2 relative to the centroid
+    angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
+    
+    # Sort points by angle
+    sorted_idx = np.argsort(angles)
+    sorted_pts = pts[sorted_idx]
+    
+    # Find the top-left (min sum of x+y) in the sorted array to set the anchor
+    tl_idx = np.argmin(sorted_pts.sum(axis=1))
+    
+    # Roll the array so that Top-Left is at index 0
+    return np.roll(sorted_pts, -tl_idx, axis=0)
 
 def main():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -52,7 +66,7 @@ def main():
     enhancement_model.eval()
 
     corner_model = CornerHeatmapModel(dropout_rate=0.2).to(device)
-    corner_ckpt = torch.load('checkpoints/corner_heatmap_robust/best_model.pth', map_location=device, weights_only=True)
+    corner_ckpt = torch.load('checkpoints/corner_heatmap_robust_extreme/best_model.pth', map_location=device, weights_only=True)
     
     state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
     if list(state_dict.keys())[0].startswith('module.'):
@@ -102,7 +116,7 @@ def main():
         for i in range(4):
             for j in range(i+1, 4):
                 dist = np.linalg.norm(pred_corners[i] - pred_corners[j])
-                if dist < 0.1: # اگر دو نقطه خیلی به هم نزدیک باشند
+                if dist < 0.1: 
                     weaker_idx = i if confidences[i] < confidences[j] else j
                     valid_mask[weaker_idx] = False
         
