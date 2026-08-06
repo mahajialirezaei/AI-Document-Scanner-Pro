@@ -409,8 +409,8 @@ if __name__ == '__main__':
         print("Please ensure 'data/clean_scans' and 'data/random_backgrounds' directories exist and contain images.")
         sys.exit(1)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=2)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
 
     print(f"Initializing {args.task} model with Dropout = {args.dropout}...")
     if args.task == "enhancement":
