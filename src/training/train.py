@@ -108,6 +108,10 @@ class EnhancementTrainer:
             print(f"Epoch {epoch:3d}/{self.num_epochs} | "
                   f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
                   f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
+            
+            # Clear GPU cache to prevent memory fragmentation
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
         
         print(f"\nTraining complete! Best validation loss: {self.best_val_loss:.6f}")
         return self.history
@@ -213,6 +217,10 @@ class CornerRegressionTrainer:
             print(f"Epoch {epoch:3d}/{self.num_epochs} | "
                   f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
                   f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
+            
+            # Clear GPU cache to prevent memory fragmentation
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
         
         print(f"\nTraining complete! Best validation loss: {self.best_val_loss:.6f}")
         return self.history
@@ -334,6 +342,10 @@ class CornerHeatmapTrainer:
             print(f"Epoch {epoch:3d}/{self.num_epochs} | "
                   f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
                   f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
+            
+            # Clear GPU cache to prevent memory fragmentation
+            if self.device.type == 'cuda':
+                torch.cuda.empty_cache()
         
         print(f"\nTraining complete! Best validation loss: {self.best_val_loss:.6f}")
         return self.history
@@ -428,7 +440,8 @@ if __name__ == '__main__':
     if args.resume:
         if os.path.exists(args.resume):
             print(f"Loading pre-trained weights from: {args.resume}")
-            checkpoint = torch.load(args.resume, map_location=device)
+            # Added weights_only=True to resolve PyTorch security warning
+            checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
             state_dict = checkpoint.get('model_state_dict', checkpoint)
             
             if list(state_dict.keys())[0].startswith('module.') and not isinstance(model, nn.DataParallel):
