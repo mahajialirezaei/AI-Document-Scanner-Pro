@@ -78,7 +78,6 @@ class SyntheticDocumentDataset(Dataset):
         return pts
 
     def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
-        """Upgraded: Returns the image and a hole_mask for true spiral cutouts."""
         h, w = img.shape[:2]
         hole_mask = np.ones((h, w), dtype=np.uint8) * 255
         
@@ -320,10 +319,6 @@ class SyntheticDocumentDataset(Dataset):
         return result
 
     def _add_clothing_occlusions(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        """
-        Simulates clothing sleeves/arms (10-15%).
-        Engineered to originate from the background and only clip the document margin (10-30 pixels).
-        """
         if random.random() > 0.15:
             return img
             
@@ -380,6 +375,13 @@ class SyntheticDocumentDataset(Dataset):
         clean_scan, hole_mask = self._add_binding_artifacts(clean_scan, probability=0.30)
         
         if self.use_degradation and self.degradation_pipeline:
+            # Sync Curl Transform: Combine RGB + Alpha into BGRA to bend paper before perspective
+            bgra = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2BGRA)
+            bgra[:, :, 3] = hole_mask
+            bgra = self.degradation_pipeline.apply_elastic_transform(bgra)
+            clean_scan = bgra[:, :, :3]
+            hole_mask = bgra[:, :, 3]
+            
             clean_scan = self.degradation_pipeline.apply_ink_simulation(clean_scan)
             
         clean_scan = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2RGB)
