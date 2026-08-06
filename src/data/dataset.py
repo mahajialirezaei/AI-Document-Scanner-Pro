@@ -111,42 +111,6 @@ class SyntheticDocumentDataset(Dataset):
                 
         return result, hole_mask
 
-    def _add_binder_margins(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        if random.random() > 0.25:
-            return img
-            
-        result = img.copy()
-        overlay = np.zeros_like(result)
-        
-        color = random.choice([(20, 20, 20), (100, 30, 30), (20, 40, 120), (180, 180, 180)])
-        edges = [(0, 1), (1, 2), (2, 3), (3, 0)]
-        random.shuffle(edges)
-        
-        center = np.mean(corners, axis=0)
-        thickness = random.randint(30, 120)
-        
-        for edge_idx in edges[:random.randint(1, 2)]:
-            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
-            vec = pt2 - pt1
-            length = np.linalg.norm(vec)
-            if length == 0: continue
-            
-            normal = np.array([-vec[1], vec[0]]) / length
-            if np.dot(normal, (pt1 + pt2) / 2.0 - center) < 0:
-                normal = -normal
-                
-            pt3 = pt2 + normal * thickness
-            pt4 = pt1 + normal * thickness
-            
-            poly = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
-            cv2.fillPoly(overlay, [poly], color)
-            
-        overlay = cv2.GaussianBlur(overlay, (7, 7), 3)
-        mask = np.any(overlay > 0, axis=2)[..., None]
-        result = np.where(mask, overlay, result)
-        
-        return result
-
     def _add_adjacent_page(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
         if random.random() > 0.3:
             return img
@@ -288,38 +252,8 @@ class SyntheticDocumentDataset(Dataset):
         result = np.where(mask, overlay, result)
         return result
 
-    def _add_corner_occlusions(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        if random.random() > 0.25:
-            return img
-            
-        result = img.copy()
-        overlay = np.zeros_like(result)
-        
-        corner_idx = random.randint(0, 3)
-        c_pt = corners[corner_idx]
-        
-        w, h = random.randint(120, 250), random.randint(120, 250)
-        shift_x = random.uniform(-w/3, w/3)
-        shift_y = random.uniform(-h/3, h/3)
-        
-        pt1 = [c_pt[0] - w/2 + shift_x, c_pt[1] - h/2 + shift_y]
-        pt2 = [c_pt[0] + w/2 + shift_x, c_pt[1] - h/2 + shift_y]
-        pt3 = [c_pt[0] + w/2 + shift_x, c_pt[1] + h/2 + shift_y]
-        pt4 = [c_pt[0] - w/2 + shift_x, c_pt[1] + h/2 + shift_y]
-        
-        poly = np.array([pt1, pt2, pt3, pt4], dtype=np.int32)
-        
-        dark_color = (random.randint(5, 45), random.randint(5, 45), random.randint(5, 45))
-        cv2.fillPoly(overlay, [poly], dark_color)
-        
-        overlay = cv2.GaussianBlur(overlay, (5, 5), 2)
-        mask = np.any(overlay > 0, axis=2)[..., None]
-        result = np.where(mask, overlay, result)
-        
-        return result
-
     def _add_clothing_occlusions(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-        if random.random() > 0.15:
+        if random.random() > 0.10:
             return img
             
         result = img.copy()
@@ -344,7 +278,7 @@ class SyntheticDocumentDataset(Dataset):
         t = random.uniform(0.2, 0.8)
         edge_pt = pt1 * (1 - t) + pt2 * t
         
-        dist_outside = random.uniform(80, 150)
+        dist_outside = random.uniform(100, 180)
         sleeve_center = edge_pt + normal * dist_outside
         
         poly_pts = []
@@ -407,12 +341,10 @@ class SyntheticDocumentDataset(Dataset):
         composite[warped_mask == 255] = warped_scan[warped_mask == 255]
 
         if self.use_degradation:
-            composite = self._add_binder_margins(composite, dst_pts)
             composite = self._add_adjacent_page(composite, dst_pts)
             composite = self._add_distractors(composite, dst_pts)
             composite = self._add_3d_shadow_distractors(composite, dst_pts)
             composite = self._add_camouflage_polygons(composite, dst_pts)
-            composite = self._add_corner_occlusions(composite, dst_pts)
             composite = self._add_clothing_occlusions(composite, dst_pts)
 
         if self.use_degradation and self.degradation_pipeline:
