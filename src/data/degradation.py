@@ -241,7 +241,7 @@ class DegradationPipeline:
     
     def apply_random_degradation(self, image: np.ndarray, 
                                   num_degradations: int = 4) -> np.ndarray:
-        """Apply a random combination of degradations."""
+        """Apply a random combination of degradations. (Elastic removed for precise corner sync)"""
         degradation_funcs = [
             lambda x: self.apply_motion_blur(x),
             lambda x: self.apply_gaussian_blur(x),
@@ -252,8 +252,7 @@ class DegradationPipeline:
             lambda x: self.apply_contrast_change(x),
             lambda x: self.apply_color_temperature(x),
             lambda x: self.apply_shadow(x, num_shadows=random.randint(1, 2)),
-            lambda x: self.apply_resolution_loss(x),
-            lambda x: self.apply_elastic_transform(x)
+            lambda x: self.apply_resolution_loss(x)
         ]
 
         num_to_apply = min(num_degradations, len(degradation_funcs))
