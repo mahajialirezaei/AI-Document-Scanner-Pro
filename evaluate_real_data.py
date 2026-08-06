@@ -66,7 +66,7 @@ def main():
     enhancement_model.eval()
 
     corner_model = CornerHeatmapModel(dropout_rate=0.2).to(device)
-    corner_ckpt = torch.load('checkpoints/corner_heatmap_robust_extreme/best_model.pth', map_location=device, weights_only=True)
+    corner_ckpt = torch.load('checkpoints/corner_heatmap_robust_extreme_v2/best_model.pth', map_location=device, weights_only=True)
     
     state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
     if list(state_dict.keys())[0].startswith('module.'):
@@ -75,7 +75,7 @@ def main():
     corner_model.load_state_dict(state_dict)
     corner_model.eval()
 
-    metrics = {'psnr': [], 'ssim': [], 'corner_mse': []}
+    metrics = {'psnr': [], 'ssim': [], 'corner_mse': [], 'corner_mae': []}
 
     for idx in range(total_samples):
         sample = dataset[idx]
@@ -98,38 +98,14 @@ def main():
         h_hm, w_hm = heatmaps.shape[1], heatmaps.shape[2]
         
         pred_corners = []
-        confidences = []
         
         for i in range(4):
             hm = heatmaps[i]
             hm_blurred = cv2.GaussianBlur(hm, (5, 5), 0)
-            max_conf = np.max(hm_blurred)
             y, x = np.unravel_index(np.argmax(hm_blurred), hm_blurred.shape)
             pred_corners.append([x / w_hm, y / h_hm])
-            confidences.append(max_conf)
             
         pred_corners = np.array(pred_corners, dtype=np.float32)
-        
-        CONF_THRESHOLD = 0.15 
-        valid_mask = np.array(confidences) > CONF_THRESHOLD
-        
-        for i in range(4):
-            for j in range(i+1, 4):
-                dist = np.linalg.norm(pred_corners[i] - pred_corners[j])
-                if dist < 0.1: 
-                    weaker_idx = i if confidences[i] < confidences[j] else j
-                    valid_mask[weaker_idx] = False
-        
-        for i in range(4):
-            if not valid_mask[i]:
-                opp = (i + 2) % 4
-                adj1 = (i + 1) % 4
-                adj2 = (i - 1) % 4
-                
-                if valid_mask[opp] and valid_mask[adj1] and valid_mask[adj2]:
-                    pred_corners[i] = pred_corners[adj1] + pred_corners[adj2] - pred_corners[opp]
-                    pred_corners[i] = np.clip(pred_corners[i], 0.0, 1.0)
-                    print(f"    -> [Recovery] Corner {i} geometrically estimated (Conf: {confidences[i]:.2f})")
 
         pred_corners_pixel = (pred_corners * [w, h]).astype(np.float32)
         gt_corners_pixel = (gt_corners * [w, h]).astype(np.float32)
@@ -139,6 +115,9 @@ def main():
 
         corner_mse = np.mean((pred_corners_pixel - gt_corners_pixel) ** 2)
         metrics['corner_mse'].append(corner_mse)
+        
+        corner_mae = np.mean(np.abs(pred_corners_pixel - gt_corners_pixel))
+        metrics['corner_mae'].append(corner_mae)
 
         dst_pts = np.array([
             [0, 0],
@@ -180,7 +159,7 @@ def main():
         fig, axes = plt.subplots(1, 4, figsize=(24, 6))
 
         axes[0].imshow(vis_raw)
-        axes[0].set_title(f"Corners (GT: Green, Pred: Red)\nCorner MSE: {corner_mse:.1f} px", fontsize=12)
+        axes[0].set_title(f"Corners (GT: Green, Pred: Red)\nMSE: {corner_mse:.1f} px² | MAE: {corner_mae:.1f} px", fontsize=12)
         axes[0].axis('off')
 
         axes[1].imshow(rectified_rgb)
@@ -201,12 +180,13 @@ def main():
         plt.savefig(save_path, bbox_inches='tight', dpi=150)
         plt.close()
 
-        print(f"[{idx+1:02d}/{total_samples:02d}] Saved: {save_path} | PSNR: {val_psnr:.2f} | Corner MSE: {corner_mse:.1f}")
+        print(f"[{idx+1:02d}/{total_samples:02d}] Saved: {save_path} | PSNR: {val_psnr:.2f} | MSE: {corner_mse:.1f} | MAE: {corner_mae:.1f}")
 
     print("\n" + "="*45)
     print("=== FINAL END-TO-END EVALUATION SUMMARY ===")
     print(f"Total Images Evaluated   : {total_samples}")
     print(f"Average Corner MSE       : {np.mean(metrics['corner_mse']):.2f} pixels^2")
+    print(f"Average Corner MAE       : {np.mean(metrics['corner_mae']):.2f} pixels")
     print(f"Average Enhancement PSNR : {np.mean(metrics['psnr']):.2f} dB")
     print(f"Average Enhancement SSIM : {np.mean(metrics['ssim']):.4f}")
     print("="*45)
