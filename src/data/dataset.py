@@ -370,23 +370,24 @@ class SyntheticDocumentDataset(Dataset):
             
         scan_path = self.clean_scans[idx % len(self.clean_scans)]
         bg_path = random.choice(self.backgrounds)
+        
         clean_scan = cv2.imread(str(scan_path))
+        
+        clean_scan = cv2.resize(clean_scan, (self.image_size[1], self.image_size[0]))
         
         clean_scan, hole_mask = self._add_binding_artifacts(clean_scan, probability=0.30)
         
         if self.use_degradation and self.degradation_pipeline:
-            # Sync Curl Transform: Combine RGB + Alpha into BGRA to bend paper before perspective
             bgra = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2BGRA)
             bgra[:, :, 3] = hole_mask
             bgra = self.degradation_pipeline.apply_elastic_transform(bgra)
-            clean_scan = bgra[:, :, :3]
-            hole_mask = bgra[:, :, 3]
+            
+            clean_scan = np.ascontiguousarray(bgra[:, :, :3])
+            hole_mask = np.ascontiguousarray(bgra[:, :, 3])
             
             clean_scan = self.degradation_pipeline.apply_ink_simulation(clean_scan)
             
         clean_scan = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2RGB)
-        clean_scan = cv2.resize(clean_scan, (self.image_size[1], self.image_size[0]))
-        hole_mask = cv2.resize(hole_mask, (self.image_size[1], self.image_size[0]), interpolation=cv2.INTER_NEAREST)
         scan_h, scan_w = clean_scan.shape[:2]
         
         bg_image = cv2.imread(str(bg_path))
