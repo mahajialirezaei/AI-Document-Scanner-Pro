@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 def init_weights(m):
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -75,23 +74,28 @@ class OutConv(nn.Module):
         return self.conv(x)
 
 class EnhancementUNet(nn.Module):
-    """Task 1: Enhancement (U-Net)"""
+    """Task 1: Enhancement (U-Net) with Selective Regularization"""
     def __init__(self, n_channels=3, n_classes=3, bilinear=False, dropout_rate=0.0):
         super(EnhancementUNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
 
-        self.inc = DoubleConv(n_channels, 64, dropout_rate=dropout_rate)
-        self.down1 = Down(64, 128, dropout_rate=dropout_rate)
-        self.down2 = Down(128, 256, dropout_rate=dropout_rate)
+        # Early layers: No dropout to preserve low-level features and geometric structure
+        self.inc = DoubleConv(n_channels, 64, dropout_rate=0.0)
+        self.down1 = Down(64, 128, dropout_rate=0.0)
+        self.down2 = Down(128, 256, dropout_rate=0.0)
+        
+        # Deep layers / Bottleneck: Apply dropout for semantic regularization
         self.down3 = Down(256, 512, dropout_rate=dropout_rate)
         factor = 2 if bilinear else 1
         self.down4 = Down(512, 1024 // factor, dropout_rate=dropout_rate)
         self.up1 = Up(1024, 512 // factor, bilinear, dropout_rate=dropout_rate)
-        self.up2 = Up(512, 256 // factor, bilinear, dropout_rate=dropout_rate)
-        self.up3 = Up(256, 128 // factor, bilinear, dropout_rate=dropout_rate)
-        self.up4 = Up(128, 64, bilinear, dropout_rate=dropout_rate)
+        
+        # Late layers: No dropout
+        self.up2 = Up(512, 256 // factor, bilinear, dropout_rate=0.0)
+        self.up3 = Up(256, 128 // factor, bilinear, dropout_rate=0.0)
+        self.up4 = Up(128, 64, bilinear, dropout_rate=0.0)
         self.outc = OutConv(64, n_classes)
         self.sigmoid = nn.Sigmoid()
 
@@ -173,7 +177,6 @@ class SoftArgmax2D(nn.Module):
         idx_y = indices // W
         idx_x = indices % W
         
-
         expected_y = (weights * idx_y).sum(dim=-1) / max(1, H - 1)
         expected_x = (weights * idx_x).sum(dim=-1) / max(1, W - 1)
         
