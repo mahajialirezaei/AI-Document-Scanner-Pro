@@ -1,122 +1,52 @@
 # Model Evolution & Comparison Log
 
-**Objective:** Documenting the evolutionary path, data augmentation strategies, and evaluation metrics from the base model to the upcoming extreme-robustness version.
+**Objective:** Documenting the evolutionary path, data augmentation strategies, and evaluation metrics from the base model to the strict Phase-compliant regularized versions, specifically addressing the transition from geometric optimization to semantic robustness.
 
 ## Evolution Tree
 
 ```text
-corner_heatmap (Base Optical Model)
-└── corner_heatmap_coordconv (Architectural Upgrade)
-    └── corner_heatmap_robust (Structural Distractors)
-        └── corner_heatmap_robust_3d_camo (Advanced 3D & Camouflage)
-            ├── corner_heatmap_robust_extreme (Over-Degraded Branch)
-            └── [Upcoming] corner_heatmap_robust_extreme_v2 (Optimized Pipeline & Refined Degradation)
+[Legacy Branch] Unintentional Static Regularization Era
+├── corner_heatmap -> coordconv -> robust -> 3d_camo -> extreme
+└── corner_heatmap_robust_extreme_v2 (Peak Geometric Accuracy, Failed Semantic Generalization)
+
+[Official Pipeline] Strict Document Phase Compliance
+├── [Phase 5] corner_heatmap_clean_nodropout (Zero Regularization Baseline)
+└── [Phase 6] corner_heatmap_regularized (Dynamic Dropout Curriculum)
 
 ```
 
-## 1. `corner_heatmap` (Base Model)
+## 1. `corner_heatmap_robust_extreme_v2` (The Legacy Optimizer)
 
+**Overview:** The culmination of our data pipeline engineering. This model resolved the geometric desynchronization of physical paper curl by applying `ElasticTransform` on a 4-channel matrix (RGB + hole mask) *before* perspective warping, and utilized persistent CPU workers to drastically reduce training bottlenecks.
 
+* **Dropout Status:** Unintentionally trained with a static `dropout=0.2`.
+* **Performance / Corner MAE:** **25.57 px** (End-to-End Real Data).
+* **Key Finding (The Semantic Trap):** While geometrically sound, the model exhibited severe semantic confusion. It learned to hunt for the highest contrast 90-degree angles in the image, successfully latching onto physical distractors like dark binders and desk edges instead of the true paper corners. Furthermore, the `SoftArgmax2D` layer often predicted coordinates floating in mid-air (averaging multiple high-confidence background spots). This proved the necessity for formal regularization.
 
-**Overview:** The foundational training phase focused on basic digital and optical degradations (blur, noise, simple perspective).
+---
 
-* **Additions:** Basic synthetic dataset, optical camera flaws.
+## 2. `corner_heatmap_clean_nodropout` (Phase 5: The Pure Baseline)
 
+**Overview:** Developed in strict compliance with Phase 5 of the project guidelines, which mandates zero regularization and no dropout layers for the initial architecture.
 
-* **Performance:** Suffered from coordinate sorting logic errors during early evaluation; struggled with real-world edge clutter.
+* **Additions & Fixes:**
+* Forced `dropout=0.0` across all UNet and Corner Regression blocks.
+* Removed artificial black border drawing and direct corner occlusion patches to test pure optical understanding.
 
 
+* **Synthetic Performance:** Achieved an astonishingly low Validation Loss of **0.0092**.
+* **Real-World Performance (Corner MAE):** Spiked to **31.98 px**.
+* **Known Issues:** This model is the textbook definition of synthetic domain overfitting. By removing all dropout constraints, the network relied entirely on superficial features (high-contrast edges). When evaluated on real data (e.g., a white paper on a black binder), it completely ignored paper texture and text alignment, snapping its predictions to the binder's external edges with extreme confidence.
 
-## 2. `corner_heatmap_coordconv` (Architectural Upgrade)
+---
 
+## 3. `corner_heatmap_regularized` (Phase 6: The Robust Curriculum)
 
+**Overview:** The final evolution, addressing Phase 6 of the project. This model targets the "Semantic Trap" by intentionally degrading the network's capacity during training, forcing it to look beyond superficial high-contrast edges and understand the actual content (text lines, paper texture, and margins).
 
-**Overview:** Addressed the "floating-point" sub-pixel localization issue by modifying the network architecture.
+* **Additions & Fixes:**
+* **Dynamic Dropout Scheduler:** Implemented a Cosine Annealing scheduler for the dropout layers.
+* **Curriculum Learning:** The model starts with a 5-epoch warmup at `dropout=0.0` to establish basic spatial awareness of the document geometry. Over the remaining 25 epochs, the dropout gradually increases to `0.5`.
 
-* **Additions:** Implemented `CoordConv` layers and upgraded to `SoftArgmax2D` with a high `beta` parameter for sharp activations.
 
-
-* **Performance / Corner MSE:** **~4660 px²**
-
-* **Known Issues:** Overfitted to the synthetic domain. The high confidence caused the model to lock onto high-contrast physical distractors (binders, open books) instead of the actual paper.
-
-
-
-## 3. `corner_heatmap_robust` (Structural Distractors)
-
-
-
-**Overview:** The first major phase of targeted adversarial training to force the model to learn semantic document structures rather than raw contrast.
-
-* **Additions:**
-
-* Synthetic binder margins (thick textured borders).
-
-
-* Adjacent page rendering (open book simulation with dark spine).
-
-
-* Color temperature shifts (warm/cool lighting).
-
-
-* Targeted corner occlusion masks.
-
-
-
-
-* **Performance / Corner MSE:** **1512.87 px²** (Massive ~67% improvement).
-
-
-* **Known Issues:** Failed against 3D objects with drop shadows (e.g., pencil cases) and white objects causing color camouflage (e.g., white mouse on white paper).
-
-
-
-## 4. `corner_heatmap_robust_3d_camo` (Advanced 3D & Camouflage)
-
-
-
-**Overview:** Fine-tuned to overcome the "Natural Adversarial Patch" effect caused by 3D depth and color blending.
-
-* **Additions:**
-
-* 3D Drop Shadow Distractors (simulating physical depth).
-
-
-* Camouflage Polygons (forcing reliance on structural edges).
-
-
-* Severe corner occlusion by dark objects.
-
-
-
-
-* **Performance / Corner MSE:** **1289.51 px²** (Further ~15% improvement).
-
-
-* **Known Issues:** Still vulnerable to massive structured occlusions (like sleeves/arms covering entire corners), true spiral cutouts (where the background shows through the paper), and physical paper curl near bindings.
-
-
-
-## 5. `corner_heatmap_robust_extreme` (Over-Degraded Branch)
-
-**Overview:** The previous fine-tuning phase targeting complex occlusions and curl, which unexpectedly backfired due to excessive degradation.
-
-* **Additions:** Included `_add_clothing_occlusions` (simulating sleeves), upgraded binding artifacts, and `ElasticTransform` for 3D paper curl.
-* **Performance / Corner MSE:** Spiked to **~3500-4900 px²**.
-* **Known Issues:** The model suffered from severe geometric confusion. By painting thick black borders and directly occluding corners with dark polygons, the model's ability to trust spatial features was destroyed. Furthermore, applying `ElasticTransform` *after* perspective warping caused a fatal spatial desynchronization between the physical paper curl and the flat ground-truth coordinates.
-
-## 6. [Upcoming] `corner_heatmap_robust_extreme_v2` (Optimized Pipeline & Refined Degradation)
-
-**Overview:** The new, highly-optimized fine-tuning phase. This version acts as a direct correction to the `extreme` branch, focusing on structural precision, sub-pixel accuracy, and eliminating systemic bottlenecks.
-
-* **Planned Additions & Fixes:**
-* **Pruned Augmentations:** Completely disabled manual binder borders and direct corner occlusions to restore geometric confidence. Sleeve occlusions are moderated and pushed further from the true corners.
-* **RGBA Curl Synchronization:** `ElasticTransform` is now applied to a 4-channel matrix (RGB + hole mask) *before* perspective wrapping, ensuring ground truth coordinates perfectly track the curved paper.
-* **Processing Optimization:** Resolved CPU/RAM starvation by executing `cv2.resize` upstream and employing multi-worker dataloaders (`persistent_workers=True`), drastically reducing epoch times.
-* **Evaluation Hardening:** Evaluation purely relies on `SoftArgmax2D` output with Polar Coordinate (`arctan2`) sorting, fully abandoning fragile geometric heuristics (like the parallelogram assumption) and introducing Mean Absolute Error (MAE) for clear sub-pixel accuracy tracking.
-
-
-
-```
-
-```
+* **Expected Outcome:** By randomly blinding half of the network's neurons in later epochs, the model can no longer rely solely on a single prominent background edge (like a black folder). It is mathematically forced to cross-reference multiple features (the corner itself + text layout + paper color) to survive the loss function, bridging the synthetic-to-real gap.
