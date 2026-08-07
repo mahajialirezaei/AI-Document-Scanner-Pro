@@ -59,7 +59,7 @@ class SobelLoss(nn.Module):
 
 
 class EnhancementLoss(nn.Module):
-    def __init__(self, l1_weight=1.0, edge_weight=0.5, ssim_weight=1.0, text_weight=3.0, color_weight=0.5):
+    def __init__(self, l1_weight=1.0, edge_weight=2.0, ssim_weight=1.5, text_weight=5.0, color_weight=0.5):
         super().__init__()
         self.sobel = SobelLoss()
         self.l1_weight = l1_weight
@@ -74,6 +74,7 @@ class EnhancementLoss(nn.Module):
         pred = torch.clamp(pred, 0.0, 1.0)
         target = torch.clamp(target, 0.0, 1.0)
         
+        # Heavy weighting on dark/text pixels to ensure sharp and vivid character reconstruction
         grayscale_target = target.mean(dim=1, keepdim=True)
         weight_map = 1.0 + (self.text_weight * torch.pow(torch.clamp(1.0 - grayscale_target, min=0.0), 3))
         
@@ -82,6 +83,7 @@ class EnhancementLoss(nn.Module):
         
         loss += self.l1_weight * weighted_l1
         
+        # Enhanced edge loss for text stroke sharpness
         if self.edge_weight > 0:
             pred_edge = self.sobel(pred)
             target_edge = self.sobel(target)
