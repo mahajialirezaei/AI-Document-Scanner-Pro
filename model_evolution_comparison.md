@@ -1,6 +1,6 @@
 # Model Evolution & Comparison Log
 
-**Objective:** Documenting the evolutionary path, data augmentation strategies, and evaluation metrics from the base model to the strict Phase-compliant regularized versions, specifically addressing the transition from geometric optimization to semantic robustness[cite: 16].
+**Objective:** Documenting the evolutionary path, data augmentation strategies, and evaluation metrics from the base model to the strict Phase-compliant regularized versions, specifically addressing the transition from geometric optimization to semantic robustness[cite: 14].
 
 ## Evolution Tree
 
@@ -10,8 +10,9 @@
 └── corner_heatmap_robust_extreme_v2 (Peak Geometric Accuracy, Failed Semantic Generalization)
 
 [Official Pipeline] Strict Document Phase Compliance
-├── [Phase 5] corner_heatmap_clean_nodropout (Zero Regularization Baseline)
-└── [Phase 6] corner_heatmap_regularized (Dynamic Dropout Curriculum)
+├── [Phase 5] corner_heatmap_clean_nodropout_v2/v3 (Zero Regularization Baseline)
+├── [Phase 6 - Failed] corner_heatmap_regularized_v2 (Global Dropout 0.5 -> Geometric Collapse)
+└── [Phase 6 - Final] corner_heatmap_regularized_v3 (Selective Bottleneck Dropout 0.3)
 
 ```
 
@@ -31,7 +32,7 @@
 
 ---
 
-## 2. `corner_heatmap_clean_nodropout` (Phase 5: The Pure Baseline)
+## 2. `corner_heatmap_clean_nodropout_v2` (Phase 5: The Pure Baseline)
 
 **Overview:** Developed in strict compliance with Phase 5 of the project guidelines, which mandates zero regularization and no dropout layers for the initial architecture.
 
@@ -39,48 +40,42 @@
 * Forced `dropout=0.0` across all UNet and Corner Regression blocks.
 
 
-* Removed artificial black border drawing and direct corner occlusion patches to test pure optical understanding.
+* Re-introduced "Dark Binder Margins" to the synthetic dataset to explicitly test the model's robustness against strong background edges.
+* Upgraded `SoftArgmax2D` with Dual-Temperature scaling (using `beta=10000.0` during evaluation) to forcefully eliminate mid-air "floating point" predictions.
 
 
 
 
-* **Synthetic Performance:** Achieved an astonishingly low Validation Loss of **0.0092**.
-
-
-* **Real-World Performance (Corner MAE):** Spiked to **31.98 px**.
-
-
-* **Known Issues:** This model is the textbook definition of synthetic domain overfitting. By removing all dropout constraints, the network relied entirely on superficial features (high-contrast edges). When evaluated on real data (e.g., a white paper on a black binder), it completely ignored paper texture and text alignment, snapping its predictions to the binder's external edges with extreme confidence.
+* **Real-World Performance (Corner MAE):** **21.75 px**
+* **Known Issues (The Overfitting Reality):** As expected from a 0.0 dropout model, it became highly overfitted to the superficial features of the synthetic dataset. Visual evaluations confirmed that the Dual-Temperature SoftArgmax successfully eliminated floating points, but the predictions snapped with extreme confidence to the external edges of dark binders instead of the white paper. The model entirely ignored document textures and text boundaries.
 
 
 
 ---
 
-## 3. `corner_heatmap_regularized` (Phase 6: The Robust Curriculum)
+## 3. The `v2` Global Dropout Failure (Catastrophic Geometric Collapse)
 
-**Overview:** The final evolution, addressing Phase 6 of the project. This model targets the "Semantic Trap" by intentionally degrading the network's capacity during training, forcing it to look beyond superficial high-contrast edges and understand the actual content (text lines, paper texture, and margins).
+**Overview:** Our initial attempt to regularize the network (Phase 6) involved applying a global dropout rate of `0.5` across all encoder and decoder layers using a Cosine Annealing scheduler.
 
-* **Additions & Fixes:**
-* **Dynamic Dropout Scheduler:** Implemented a Cosine Annealing scheduler for the dropout layers.
+* **Performance / Corner MAE:** Spiked to **84.86 px**
+* **Performance / Corner MLE (Euclidean):** Spiked to **145.05 px**
+* **Analysis:** The network suffered a complete **Geometric Collapse**. By randomly deactivating 50% of the neurons in the *early* feature-extraction layers (which are responsible for detecting low-level lines and simple contrasts), the network effectively went "blind".
+* **The "Butterfly Effect":** Because the network lost its foundational ability to perceive a quadrilateral, it predicted four random, disconnected points in space. When the polar coordinate sorting algorithm (`order_points`) attempted to connect these logically disjointed points, it generated intersecting lines (bowtie/butterfly shapes) and placed points hundreds of pixels away from any object.
 
+---
 
-* **Curriculum Learning:** The model starts with a 5-epoch warmup at `dropout=0.0` to establish basic spatial awareness of the document geometry. Over the remaining 25 epochs, the dropout gradually increases to `0.5`.
+## 4. `corner_heatmap_regularized_v3` (Phase 6: The Final Robust Curriculum)
 
+**Overview:** The architectural correction to the geometric collapse. This version intelligently restricts regularization to the deeper, semantic layers of the network, preventing geometric amnesia while forcing the model to solve the Semantic Trap.
 
-
-
-* **Actual Outcome & Performance:**
-* **Real-World Performance (Corner MAE):** Dropped significantly to **21.01 px**.
-* **Analysis:** The dropout scheduler successfully prevented severe overfitting. By randomly blinding half of the network's neurons in later epochs, the model was forced to cross-reference multiple structural features (paper texture + text layout) rather than solely relying on high-contrast external edges.
-
-
-* **Remaining Bottleneck & Final Pipeline Upgrades:**
-* **The "Floating Points" Issue:** While the MAE improved by ~11 pixels compared to the pure baseline, visual evaluations revealed that predictions occasionally hovered in mid-air between the paper corner and nearby dark binder edges.
-* **Applied Fix 1 (SoftArgmax Temperature):** Identified that standard `SoftArgmax` averages probabilities between multiple hotspots. Modified `SoftArgmax2D` to use a high temperature parameter (`beta=10000.0`) during inference, forcing sharp, decisive predictions rather than weighted spatial averages.
-* **Applied Fix 2 (Targeted Distractors):** Updated the data generator to explicitly render "Dark Binder Margins" near synthetic paper edges, actively teaching the model to reject these specific high-contrast physical distractors during the regularization phase.
+* **Architectural Refinements:**
+* **Selective Bottleneck Dropout:** Modified the `EnhancementUNet` backbone so that the initial feature extraction blocks (`inc`, `down1`, `down2`) operate with `dropout=0.0`. Dropout is exclusively applied to the deepest layers (`down3`, `down4`, `up1`) where semantic decisions (e.g., "Is this a paper edge or a binder edge?") are processed.
+* **Moderated Regularization Rate:** Reduced the target dropout rate from `0.5` to `0.3` to maintain stability against the highly complex 3D distractors now present in the dataset.
+* **Curriculum Learning:** The model starts with a 5-epoch warmup at `dropout=0.0` to establish basic spatial awareness of the document geometry. Over the remaining epochs, the dropout gradually scales to `0.3`.
 
 
 
-```
+
+* **Expected Outcome:** By keeping the network's "eyes" (early layers) open but restricting its "brain" (deep layers), the model can clearly see the geometry of both the paper and the binder, but is forced to use auxiliary features (like text alignment and paper color) to determine which quadrilateral is the true document.
 
 ```
