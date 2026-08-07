@@ -153,6 +153,44 @@ class SyntheticDocumentDataset(Dataset):
     def _add_distractors(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
         result = img.copy()
         
+        if random.random() < 0.4:
+            overlay = np.zeros_like(result)
+            edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
+            pt1, pt2 = corners[edge_idx[0]], corners[edge_idx[1]]
+            
+            vec = pt2 - pt1
+            length = np.linalg.norm(vec)
+            if length > 0:
+                normal = np.array([-vec[1], vec[0]]) / length
+                center_doc = np.mean(corners, axis=0)
+                edge_center = (pt1 + pt2) / 2.0
+                if np.dot(normal, edge_center - center_doc) < 0:
+                    normal = -normal
+                
+                binder_thickness = random.uniform(30, 100)
+                binder_gap = random.uniform(-10, 20)
+                
+                b_pt1 = pt1 + normal * binder_gap - vec * 0.1
+                b_pt2 = pt2 + normal * binder_gap + vec * 0.1
+                b_pt3 = b_pt2 + normal * binder_thickness
+                b_pt4 = b_pt1 + normal * binder_thickness
+                
+                binder_pts = np.array([b_pt1, b_pt2, b_pt3, b_pt4], dtype=np.int32)
+                
+                base_color = random.choice([(15, 15, 15), (30, 35, 40), (10, 20, 35)])
+                cv2.fillPoly(overlay, [binder_pts], base_color)
+                
+                for _ in range(random.randint(2, 5)):
+                    h_pt1 = b_pt1 * random.uniform(0, 1) + b_pt4 * random.uniform(0, 1)
+                    h_pt2 = b_pt2 * random.uniform(0, 1) + b_pt3 * random.uniform(0, 1)
+                    cv2.line(overlay, tuple(h_pt1.astype(int)), tuple(h_pt2.astype(int)), 
+                             (60, 60, 65), random.randint(2, 6))
+
+                overlay = cv2.GaussianBlur(overlay, (5, 5), 0)
+                mask = np.any(overlay > 0, axis=2)[..., None]
+                result = np.where(mask, overlay, result)
+
+        # 2. Random Polygon Distractors (e.g. pencil cases, clips)
         if random.random() < 0.2:
             overlay = np.zeros_like(result)
             corner_idx = random.randint(0, 3)
@@ -171,6 +209,7 @@ class SyntheticDocumentDataset(Dataset):
             mask = np.any(overlay > 0, axis=2)[..., None]
             result = np.where(mask, overlay, result)
 
+        # 3. Finger Occlusion
         if random.random() < 0.15:
             overlay = np.zeros_like(result)
             edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
@@ -340,6 +379,7 @@ class SyntheticDocumentDataset(Dataset):
         composite = bg_image.copy()
         composite[warped_mask == 255] = warped_scan[warped_mask == 255]
 
+        # Apply specific ordered background distractions
         if self.use_degradation:
             composite = self._add_adjacent_page(composite, dst_pts)
             composite = self._add_distractors(composite, dst_pts)
