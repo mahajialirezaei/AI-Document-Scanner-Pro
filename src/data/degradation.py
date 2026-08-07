@@ -82,11 +82,13 @@ class DegradationPipeline:
             
         return np.clip(degraded, 0, 255).astype(np.uint8)
 
-    def apply_motion_blur(self, image: np.ndarray, kernel_size: int = 15, angle: Optional[float] = None) -> np.ndarray:
+    def apply_motion_blur(self, image: np.ndarray, kernel_size: Optional[int] = None, angle: Optional[float] = None) -> np.ndarray:
         """Apply motion blur to simulate camera shake."""
         if angle is None:
             angle = random.uniform(0, 360)
-        
+        if kernel_size is None:
+            kernel_size = random.choice([7, 9, 11]) # Reduced from 15 to preserve text structure
+            
         kernel = np.zeros((kernel_size, kernel_size))
         center = kernel_size // 2
         end_x = int(center + kernel_size / 2 * np.cos(np.radians(angle)))
@@ -109,8 +111,8 @@ class DegradationPipeline:
         degraded = cv2.GaussianBlur(image, (kernel_size, kernel_size), sigma)
         return degraded
     
-    def apply_gaussian_noise(self, image: np.ndarray, mean: float = 0, std: float = 25) -> np.ndarray:
-        """Add Gaussian noise to simulate sensor noise."""
+    def apply_gaussian_noise(self, image: np.ndarray, mean: float = 0, std: float = 15) -> np.ndarray:
+        """Add Gaussian noise to simulate sensor noise. Reduced std to prevent complete text masking."""
         noise = np.random.normal(mean, std, image.shape).astype(np.float32)
         degraded = image.astype(np.float32) + noise
         degraded = np.clip(degraded, 0, 255).astype(np.uint8)
@@ -157,8 +159,8 @@ class DegradationPipeline:
         degraded = np.clip(degraded, 0, 255).astype(np.uint8)
         return degraded
 
-    def apply_salt_pepper_noise(self, image: np.ndarray, salt_prob: float = 0.003, pepper_prob: float = 0.003) -> np.ndarray:
-        """Add salt-and-pepper noise to simulate dead pixels or dust."""
+    def apply_salt_pepper_noise(self, image: np.ndarray, salt_prob: float = 0.0005, pepper_prob: float = 0.0005) -> np.ndarray:
+        """Add salt-and-pepper noise to simulate dead pixels or dust. Moderated to prevent text loss."""
         degraded = image.copy()
         h, w = degraded.shape[:2]
         
@@ -209,7 +211,8 @@ class DegradationPipeline:
         h, w = image.shape[:2]
         
         if scale_factor is None:
-            scale_factor = random.uniform(2, 4)
+            # Moderated the scale factor from (2, 4) to (1.2, 2.5) to prevent complete loss of character shapes
+            scale_factor = random.uniform(1.2, 2.5)
         
         new_h, new_w = int(h / scale_factor), int(w / scale_factor)
         downscaled = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
@@ -244,15 +247,15 @@ class DegradationPipeline:
         """Apply a random combination of degradations. (Elastic removed for precise corner sync)"""
         degradation_funcs = [
             lambda x: self.apply_motion_blur(x),
-            lambda x: self.apply_gaussian_blur(x),
-            lambda x: self.apply_gaussian_noise(x),
-            lambda x: self.apply_salt_pepper_noise(x),
-            lambda x: self.apply_jpeg_compression(x, quality=random.randint(30, 80)),
+            lambda x: self.apply_gaussian_blur(x, kernel_size=random.choice([3, 5])),
+            lambda x: self.apply_gaussian_noise(x, std=random.uniform(5, 15)),
+            lambda x: self.apply_salt_pepper_noise(x, salt_prob=0.0005, pepper_prob=0.0005),
+            lambda x: self.apply_jpeg_compression(x, quality=random.randint(40, 90)),
             lambda x: self.apply_brightness_change(x),
             lambda x: self.apply_contrast_change(x),
             lambda x: self.apply_color_temperature(x),
             lambda x: self.apply_shadow(x, num_shadows=random.randint(1, 2)),
-            lambda x: self.apply_resolution_loss(x)
+            lambda x: self.apply_resolution_loss(x, scale_factor=random.uniform(1.2, 2.5))
         ]
 
         num_to_apply = min(num_degradations, len(degradation_funcs))
