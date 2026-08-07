@@ -139,7 +139,7 @@ class CornerRegressionModel(nn.Module):
             nn.ReLU(inplace=True),
             nn.Dropout(dropout_rate),
             nn.Linear(256, 8),
-            nn.Sigmoid() # Normalized coordinates [0, 1]
+            nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -149,9 +149,10 @@ class CornerRegressionModel(nn.Module):
         return x
 
 class SoftArgmax2D(nn.Module):
-    def __init__(self, beta=300.0):
+    def __init__(self, train_beta=300.0, eval_beta=10000.0):
         super(SoftArgmax2D, self).__init__()
-        self.beta = beta
+        self.train_beta = train_beta
+        self.eval_beta = eval_beta
 
     def forward(self, x):
         """
@@ -162,14 +163,17 @@ class SoftArgmax2D(nn.Module):
         """
         B, C, H, W = x.size()
         x_flat = x.view(B, C, -1)
-        weights = F.softmax(self.beta * x_flat, dim=-1)
+        
+        current_beta = self.train_beta if self.training else self.eval_beta
+        
+        x_flat_max, _ = torch.max(x_flat, dim=-1, keepdim=True)
+        weights = F.softmax(current_beta * (x_flat - x_flat_max), dim=-1)
         
         indices = torch.arange(H * W).to(x.device).float()
         idx_y = indices // W
         idx_x = indices % W
         
-        # Expected values
-        # We use H-1 and W-1 to normalize to [0, 1] range if H, W > 1
+
         expected_y = (weights * idx_y).sum(dim=-1) / max(1, H - 1)
         expected_x = (weights * idx_x).sum(dim=-1) / max(1, W - 1)
         
