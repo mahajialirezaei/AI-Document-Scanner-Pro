@@ -86,7 +86,7 @@ class EnhancementTrainer(BaseTrainer):
         
         self._init_dropout_scheduler(self.model, num_epochs, use_dropout_schedule, target_dropout)
         
-        from .losses import EnhancementLoss
+        from src.training.losses import EnhancementLoss
         self.criterion = EnhancementLoss().to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10)
@@ -193,7 +193,7 @@ class CornerRegressionTrainer(BaseTrainer):
         
         self._init_dropout_scheduler(self.model, num_epochs, use_dropout_schedule, target_dropout)
         
-        from .losses import CornerLoss
+        from src.training.losses import CornerLoss
         self.criterion = CornerLoss(type=loss_type).to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
@@ -300,7 +300,7 @@ class CornerHeatmapTrainer(BaseTrainer):
         
         self._init_dropout_scheduler(self.model, num_epochs, use_dropout_schedule, target_dropout)
         
-        from .losses import HeatmapLoss
+        from src.training.losses import HeatmapLoss
         self.criterion = HeatmapLoss().to(device)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=10, verbose=True)
@@ -443,10 +443,10 @@ if __name__ == '__main__':
     parser.add_argument("--backgrounds", type=str, default="data/random_backgrounds", help="Path to random backgrounds")
     
     parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--save-dir", type=str, required=True, help="Directory to save checkpoints")
-    parser.add_argument("--image-size", type=int, default=256)
+    parser.add_argument("--image-size", type=int, default=512)
     parser.add_argument("--seed", type=int, default=42)
     
     # Phase 6 Regularization Arguments
