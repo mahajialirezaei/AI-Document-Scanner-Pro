@@ -66,7 +66,8 @@ def main():
     enhancement_model.eval()
 
     corner_model = CornerHeatmapModel(dropout_rate=0.2).to(device)
-    corner_ckpt = torch.load('checkpoints/corner_heatmap_robust_extreme_v2/best_model.pth', map_location=device, weights_only=True)
+    # Update this path based on which model you want to evaluate (e.g., v2 regularized)
+    corner_ckpt = torch.load('checkpoints/corner_heatmap_regularized_v2/best_model.pth', map_location=device, weights_only=True)
     
     state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
     if list(state_dict.keys())[0].startswith('module.'):
@@ -75,7 +76,7 @@ def main():
     corner_model.load_state_dict(state_dict)
     corner_model.eval()
 
-    metrics = {'psnr': [], 'ssim': [], 'corner_mse': [], 'corner_mae': []}
+    metrics = {'psnr': [], 'ssim': [], 'corner_mse': [], 'corner_mae': [], 'corner_mle': []}
 
     for idx in range(total_samples):
         sample = dataset[idx]
@@ -118,6 +119,10 @@ def main():
         
         corner_mae = np.mean(np.abs(pred_corners_pixel - gt_corners_pixel))
         metrics['corner_mae'].append(corner_mae)
+        
+        distances = np.sqrt(np.sum((pred_corners_pixel - gt_corners_pixel) ** 2, axis=1))
+        corner_mle = np.mean(distances)
+        metrics['corner_mle'].append(corner_mle)
 
         dst_pts = np.array([
             [0, 0],
@@ -159,7 +164,7 @@ def main():
         fig, axes = plt.subplots(1, 4, figsize=(24, 6))
 
         axes[0].imshow(vis_raw)
-        axes[0].set_title(f"Corners (GT: Green, Pred: Red)\nMSE: {corner_mse:.1f} px² | MAE: {corner_mae:.1f} px", fontsize=12)
+        axes[0].set_title(f"Corners (GT: Green, Pred: Red)\nMLE: {corner_mle:.1f} px | MAE: {corner_mae:.1f} px", fontsize=12)
         axes[0].axis('off')
 
         axes[1].imshow(rectified_rgb)
@@ -180,13 +185,14 @@ def main():
         plt.savefig(save_path, bbox_inches='tight', dpi=150)
         plt.close()
 
-        print(f"[{idx+1:02d}/{total_samples:02d}] Saved: {save_path} | PSNR: {val_psnr:.2f} | MSE: {corner_mse:.1f} | MAE: {corner_mae:.1f}")
+        print(f"[{idx+1:02d}/{total_samples:02d}] Saved: {save_path} | PSNR: {val_psnr:.2f} | MLE: {corner_mle:.1f} | MAE: {corner_mae:.1f}")
 
     print("\n" + "="*45)
     print("=== FINAL END-TO-END EVALUATION SUMMARY ===")
     print(f"Total Images Evaluated   : {total_samples}")
     print(f"Average Corner MSE       : {np.mean(metrics['corner_mse']):.2f} pixels^2")
     print(f"Average Corner MAE       : {np.mean(metrics['corner_mae']):.2f} pixels")
+    print(f"Average Corner MLE       : {np.mean(metrics['corner_mle']):.2f} pixels")
     print(f"Average Enhancement PSNR : {np.mean(metrics['psnr']):.2f} dB")
     print(f"Average Enhancement SSIM : {np.mean(metrics['ssim']):.4f}")
     print("="*45)
