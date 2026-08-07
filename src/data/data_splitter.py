@@ -18,15 +18,17 @@ def get_synthetic_splits(clean_scans_dir, backgrounds_dir, image_size=(512, 512)
     
     print(f"Data Split -> Train: {len(train_scans)} | Val: {len(val_scans)} | Test: {len(test_scans)} source scans.")
     
+    # 🔴 FIX: freeze_data set to False to prevent RAM memory crash at high resolutions
     train_dataset = SyntheticDocumentDataset(
         clean_scans_paths=train_scans, 
         backgrounds_dir=backgrounds_dir, 
         image_size=image_size, 
         use_degradation=True, 
-        freeze_data=True,
+        freeze_data=False, 
         num_samples=train_samples_per_epoch
     )
     
+    # Validation and Test remain frozen so evaluation metrics are consistent across epochs
     val_dataset = SyntheticDocumentDataset(
         clean_scans_paths=val_scans, 
         backgrounds_dir=backgrounds_dir, 
