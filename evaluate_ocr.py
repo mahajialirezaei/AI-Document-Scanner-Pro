@@ -8,6 +8,7 @@ import torchvision.transforms.functional as TF
 from src.data.dataset import RealDocumentDataset
 from src.models.model import EnhancementUNet, CornerHeatmapModel
 from src.evaluation.ocr_metrics import compare_readability 
+from src.pipelines.inference import apply_adaptive_binarization
 
 def tensor_to_rgb(tensor: torch.Tensor) -> np.ndarray:
     img = tensor.permute(1, 2, 0).cpu().numpy()
@@ -26,6 +27,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate OCR Readability")
     parser.add_argument("--corner-ckpt", type=str, required=True)
     parser.add_argument("--enhancement-ckpt", type=str, required=True)
+    parser.add_argument("--apply-binarization", action="store_true", help="Apply adaptive binarization to enhance OCR")
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -82,6 +84,11 @@ def main():
             enhanced_tensor = enhancement_model(TF.to_tensor(rectified_rgb).unsqueeze(0).to(device))
             
         enhanced_rgb = tensor_to_rgb(enhanced_tensor.squeeze(0))
+        
+        # Apply Adaptive Binarization if flag is provided
+        if args.apply_binarization:
+            enhanced_rgb = apply_adaptive_binarization(enhanced_rgb)
+            
         clean_rgb_resized = cv2.resize(clean_rgb, (1024, 1024))
 
         # OCR Evaluation
