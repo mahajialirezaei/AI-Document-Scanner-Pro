@@ -485,8 +485,8 @@ if __name__ == '__main__':
         sys.exit(1)
 
     # FIX: Set num_workers=0 to prevent thread deadlock on Windows
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     # Initialize model with maximum possible dropout. 
     # If scheduler is used, it will immediately reset this to 0.0 internally on step 0.
