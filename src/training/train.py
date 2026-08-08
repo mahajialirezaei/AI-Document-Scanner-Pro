@@ -6,7 +6,10 @@ import time
 from pathlib import Path
 import math
 from typing import List
+import cv2
 
+# FIX: Disable OpenCV internal multithreading to prevent Deadlocks with PyTorch DataLoader
+cv2.setNumThreads(0)
 
 class DropoutScheduler:
     """Schedules dropout rates during training to prevent initial shock to the network."""
@@ -474,15 +477,16 @@ if __name__ == '__main__':
             backgrounds_dir=args.backgrounds,
             image_size=(args.image_size, args.image_size),
             seed=args.seed,
-            num_eval_samples=100,
-            train_samples_per_epoch=3500
+            num_eval_samples=50,
+            train_samples_per_epoch=2000
         )
     except Exception as e:
         print(f"Error loading datasets: {e}")
         sys.exit(1)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, drop_last=True, pin_memory=True, persistent_workers=True, prefetch_factor=2)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True, persistent_workers=True)
+    # FIX: Set num_workers=0 to prevent thread deadlock on Windows
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
 
     # Initialize model with maximum possible dropout. 
     # If scheduler is used, it will immediately reset this to 0.0 internally on step 0.
