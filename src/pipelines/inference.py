@@ -6,9 +6,14 @@ import cv2
 import numpy as np
 import torch
 from typing import Dict, Tuple, Optional, List, Union
-from pathlib import Path
+from skimage.metrics import structural_similarity as ssim
+from skimage.metrics import peak_signal_noise_ratio as psnr
 
 from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
+try:
+    from src.evaluation.ocr_metrics import compute_ocr_metrics
+except ImportError:
+    compute_ocr_metrics = None
 
 def load_model(model_type: str, checkpoint_path: str, device: str = "cuda" if torch.cuda.is_available() else "cpu", dropout_rate: float = 0.0) -> torch.nn.Module:
     if model_type == "enhancement":
@@ -44,58 +49,30 @@ def preprocess_image(image: np.ndarray, input_size: int = 256) -> Tuple[torch.Te
     normalized = resized.astype(np.float32) / 255.0
     tensor = torch.from_numpy(normalized).permute(2, 0, 1).unsqueeze(0)
     
-    metadata = {
-        'original_shape': original_shape,
-        'input_size': input_size,
-        'scale_h': original_shape[0] / input_size,
-        'scale_w': original_shape[1] / input_size
-    }
-    return tensor, metadata
+    return tensor, {'original_shape': original_shape, 'input_size': input_size}
 
-def enhance_document(model: torch.nn.Module, rectified_image: np.ndarray, device: str = None, image_size: int = 1024) -> Tuple[np.ndarray, torch.Tensor]:
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-    input_tensor, metadata = preprocess_image(rectified_image, input_size=image_size)
+def enhance_document(model: torch.nn.Module, rectified_image: np.ndarray, device: str) -> np.ndarray:
+    input_tensor, _ = preprocess_image(rectified_image, input_size=1024)
     input_tensor = input_tensor.to(device)
     
     with torch.no_grad():
         output_tensor = model(input_tensor)
         
-    output_tensor = torch.clamp(output_tensor, 0, 1)
-    output_np = output_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-    output_np = (output_np * 255).astype(np.uint8)
-    output_bgr = cv2.cvtColor(output_np, cv2.COLOR_RGB2BGR)
+    output_np = torch.clamp(output_tensor, 0, 1).squeeze(0).permute(1, 2, 0).cpu().numpy()
+    output_bgr = cv2.cvtColor((output_np * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
     
     if output_bgr.shape[:2] != rectified_image.shape[:2]:
         output_bgr = cv2.resize(output_bgr, (rectified_image.shape[1], rectified_image.shape[0]))
         
-    return output_bgr, output_tensor
+    return output_bgr
 
 def apply_adaptive_binarization(image: np.ndarray) -> np.ndarray:
-    """
-    Applies adaptive Gaussian thresholding to maximize OCR readability.
-    Maintains a 3-channel output for pipeline compatibility.
-    """
-    if len(image.shape) == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.shape[2] == 3 else image
-    else:
-        gray = image
-
-    # Median blur removes high-frequency noise (like salt-and-pepper) before thresholding
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 and image.shape[2] == 3 else image
     blurred = cv2.medianBlur(gray, 3)
-    
-    # Adaptive Threshold (Gaussian). Block size 51 and C=15 are optimized for 1024x1024 text
-    binary = cv2.adaptiveThreshold(
-        blurred, 255, 
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-        cv2.THRESH_BINARY, 
-        51, 15
-    )
-    
+    binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 15)
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
-def detect_corners_regression(model: torch.nn.Module, raw_image: np.ndarray, confidence_threshold: float = 0.5, device: str = None) -> Tuple[np.ndarray, float]:
+def detect_corners_regression(model: torch.nn.Module, raw_image: np.ndarray, device: str = None) -> Tuple[np.ndarray, float]:
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         
@@ -116,162 +93,109 @@ def detect_corners_regression(model: torch.nn.Module, raw_image: np.ndarray, con
     confidence = float(valid.all())
     return corners, confidence
 
-def detect_corners_heatmap(model: torch.nn.Module, raw_image: np.ndarray, heatmap_threshold: float = 0.15, device: str = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        
+def detect_corners_heatmap(model: torch.nn.Module, raw_image: np.ndarray, device: str) -> Tuple[np.ndarray, List[float], np.ndarray]:
     input_tensor, metadata = preprocess_image(raw_image)
-    input_tensor = input_tensor.to(device)
-    
     with torch.no_grad():
-        output = model(input_tensor)
+        output = model(input_tensor.to(device))
         
-    if isinstance(output, tuple):
-        heatmaps = output[1] if len(output) > 1 else output[0]
-    else:
-        heatmaps = output
-        
-    heatmaps_np = heatmaps.detach().cpu().numpy()
-    heatmaps_np = np.squeeze(heatmaps_np)
-    
-    if heatmaps_np.ndim == 3:
-        if heatmaps_np.shape[-1] == 4 and heatmaps_np.shape[0] != 4:
-            heatmaps_np = np.transpose(heatmaps_np, (2, 0, 1))
-    elif heatmaps_np.ndim == 2:
-        heatmaps_np = np.stack([heatmaps_np] * 4, axis=0)
-    elif heatmaps_np.ndim < 2:
-        heatmaps_np = np.zeros((4, 64, 64), dtype=np.float32)
+    heatmaps_np = np.squeeze((output[1] if isinstance(output, tuple) else output).detach().cpu().numpy())
+    if heatmaps_np.ndim == 3 and heatmaps_np.shape[-1] == 4 and heatmaps_np.shape[0] != 4:
+        heatmaps_np = np.transpose(heatmaps_np, (2, 0, 1))
 
-    corners = []
-    confidences = []
-    
+    corners, confidences = [], []
     for i in range(4):
-        c_idx = i if i < heatmaps_np.shape[0] else 0
-        heatmap = heatmaps_np[c_idx]
-        if heatmap.ndim > 2: heatmap = np.squeeze(heatmap)
-        if heatmap.ndim < 2: heatmap = np.zeros((64, 64), dtype=np.float32)
-        
-        h_map, w_map = heatmap.shape[:2]
-        hm_blurred = cv2.GaussianBlur(heatmap, (5, 5), 0)
-        max_conf = float(np.max(hm_blurred))
-        
-        flat_idx = np.argmax(hm_blurred)
-        y, x = np.unravel_index(flat_idx, (h_map, w_map))
-        
-        x_norm = float(x) / float(w_map)
-        y_norm = float(y) / float(h_map)
-        corners.append([x_norm, y_norm])
-        confidences.append(max_conf)
+        hm_blurred = cv2.GaussianBlur(heatmaps_np[i], (5, 5), 0)
+        y, x = np.unravel_index(np.argmax(hm_blurred), hm_blurred.shape)
+        corners.append([float(x) / hm_blurred.shape[1], float(y) / hm_blurred.shape[0]])
+        confidences.append(float(np.max(hm_blurred)))
         
     corners = np.array(corners, dtype=np.float32)
-    
-    valid_mask = np.array(confidences) > heatmap_threshold
-    for i in range(4):
-        for j in range(i + 1, 4):
-            dist = np.linalg.norm(corners[i] - corners[j])
-            if dist < 0.1:
-                weaker = i if confidences[i] < confidences[j] else j
-                valid_mask[weaker] = False
-                
-    for i in range(4):
-        if not valid_mask[i]:
-            opp = (i + 2) % 4
-            adj1 = (i + 1) % 4
-            adj2 = (i - 1) % 4
-            if valid_mask[opp] and valid_mask[adj1] and valid_mask[adj2]:
-                corners[i] = corners[adj1] + corners[adj2] - corners[opp]
-                corners[i] = np.clip(corners[i], 0.0, 1.0)
-
     corners[:, 0] *= metadata['original_shape'][1]
     corners[:, 1] *= metadata['original_shape'][0]
+    return corners, confidences, heatmaps_np
+
+def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray, device: str) -> np.ndarray:
+    """Smart Ensemble: Takes max confidence per individual corner across multiple models."""
+    best_corners = np.zeros((4, 2), dtype=np.float32)
+    best_confs = [-1.0] * 4
     
-    corners = order_corners(corners)
-    return corners, heatmaps_np
+    for model in models:
+        corners, confs, _ = detect_corners_heatmap(model, raw_image, device)
+        for i in range(4):
+            if confs[i] > best_confs[i]:
+                best_confs[i] = confs[i]
+                best_corners[i] = corners[i]
+                
+    return best_corners
 
 def order_corners(pts: np.ndarray) -> np.ndarray:
-    if len(pts) != 4:
-        return pts
-    y_sorted = pts[np.argsort(pts[:, 1])]
-    top_half = y_sorted[:2, :]
-    bottom_half = y_sorted[2:, :]
-    
-    tl, tr = top_half[np.argsort(top_half[:, 0])]
-    bl, br = bottom_half[np.argsort(bottom_half[:, 0])]
-    
-    return np.array([tl, tr, br, bl], dtype=np.float32)
+    if len(pts) != 4: return pts
+    centroid = np.mean(pts, axis=0)
+    angles = np.arctan2(pts[:, 1] - centroid[1], pts[:, 0] - centroid[0])
+    sorted_pts = pts[np.argsort(angles)]
+    return np.roll(sorted_pts, -np.argmin(sorted_pts.sum(axis=1)), axis=0)
 
-def apply_perspective_transform(image: np.ndarray, corners: np.ndarray, output_size: Tuple[int, int] = None) -> np.ndarray:
-    if output_size is None:
-        top_width = np.linalg.norm(corners[0] - corners[1])
-        bottom_width = np.linalg.norm(corners[3] - corners[2])
-        max_width = int(max(top_width, bottom_width))
-        left_height = np.linalg.norm(corners[0] - corners[3])
-        right_height = np.linalg.norm(corners[1] - corners[2])
-        max_height = int(max(left_height, right_height))
-        output_size = (max_width, max_height)
-        
-    dst = np.array([
-        [0, 0],
-        [output_size[0] - 1, 0],
-        [output_size[0] - 1, output_size[1] - 1],
-        [0, output_size[1] - 1]
-    ], dtype=np.float32)
-    
+def apply_perspective_transform(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    output_size = (1024, 1024)
+    dst = np.array([[0, 0], [1023, 0], [1023, 1023], [0, 1023]], dtype=np.float32)
     H, _ = cv2.findHomography(corners.astype(np.float32), dst)
-    rectified = cv2.warpPerspective(image, H, output_size)
-    return rectified
+    return cv2.warpPerspective(image, H, output_size)
 
-def draw_corners_on_image(image: np.ndarray, corners: np.ndarray, color: Tuple[int, int, int] = (0, 255, 0), thickness: int = 3, circle_radius: int = 8) -> np.ndarray:
+def draw_corners_on_image(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
     output = image.copy()
+    color = (0, 255, 0)
     for i in range(4):
         pt1 = tuple(corners[i].astype(int))
         pt2 = tuple(corners[(i + 1) % 4].astype(int))
-        cv2.line(output, pt1, pt2, color, thickness)
-        
-    labels = ['TL', 'TR', 'BR', 'BL']
-    for i, corner in enumerate(corners):
-        pt = tuple(corner.astype(int))
-        cv2.circle(output, pt, circle_radius, color, -1)
-        cv2.putText(output, labels[i], (pt[0] + 10, pt[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        
+        cv2.line(output, pt1, pt2, color, 3)
+        cv2.circle(output, pt1, 8, color, -1)
     return output
 
 class DocumentScanningPipeline:
-    def __init__(self, corner_model_path: str, enhancement_model_path: str, corner_approach: str = 'heatmap', dropout_rate: float = 0.0, device: str = None):
-        if device is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
-        self.corner_approach = corner_approach
+    def __init__(self, models_registry: Dict[str, torch.nn.Module], device: str = None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.models = models_registry
         
-        if corner_approach == 'regression':
-            self.corner_model = load_model('corner_regression', corner_model_path, device, dropout_rate)
-        else:
-            self.corner_model = load_model('corner_heatmap', corner_model_path, device, dropout_rate)
-            
-        self.enhancement_model = load_model('enhancement', enhancement_model_path, device, dropout_rate)
-        
-    def process(self, raw_image: np.ndarray, return_intermediate: bool = False, apply_binarization: bool = False) -> Union[np.ndarray, Dict[str, np.ndarray]]:
+    def process(self, raw_image: np.ndarray, corner_method: str, enhancement_method: str, apply_binarization: bool, reference_img: Optional[np.ndarray] = None) -> Dict:
         results = {}
-        if self.corner_approach == 'regression':
-            corners, confidence = detect_corners_regression(self.corner_model, raw_image, device=self.device)
+        
+        # 1. Corner Detection
+        if corner_method == "ensemble":
+            models_to_ensemble = [self.models["heatmap_v2"], self.models["heatmap_v3"]]
+            corners = detect_corners_ensemble(models_to_ensemble, raw_image, self.device)
+        elif corner_method == "regression":
+            corners, _ = detect_corners_regression(self.models[corner_method], raw_image, device=self.device)
         else:
-            corners, heatmaps = detect_corners_heatmap(self.corner_model, raw_image, device=self.device)
-            results['heatmaps'] = heatmaps
+            corners, _, _ = detect_corners_heatmap(self.models[corner_method], raw_image, self.device)
             
-        results['corners'] = corners
+        corners = order_corners(corners)
         results['corners_image'] = draw_corners_on_image(raw_image, corners)
         
+        # 2. Rectification & Enhancement
         rectified = apply_perspective_transform(raw_image, corners)
-        results['rectified'] = rectified
-        
-        enhanced, _ = enhance_document(self.enhancement_model, rectified, device=self.device, image_size=1024)
+        enhanced = enhance_document(self.models[enhancement_method], rectified, self.device)
         
         if apply_binarization:
             enhanced = apply_adaptive_binarization(enhanced)
             
         results['enhanced'] = enhanced
         
-        if return_intermediate:
-            return results
-        else:
-            return enhanced
+        # 3. Metrics Calculation
+        metrics = {}
+        if compute_ocr_metrics:
+            raw_ocr = compute_ocr_metrics(rectified)
+            enh_ocr = compute_ocr_metrics(enhanced)
+            metrics['ocr_raw'] = raw_ocr['confidence']
+            metrics['ocr_enhanced'] = enh_ocr['confidence']
+            
+            if reference_img is not None:
+                ref_ocr = compute_ocr_metrics(reference_img)
+                metrics['ocr_target'] = ref_ocr['confidence']
+                
+        if reference_img is not None:
+            ref_resized = cv2.resize(reference_img, (enhanced.shape[1], enhanced.shape[0]))
+            metrics['psnr'] = float(psnr(ref_resized, enhanced))
+            metrics['ssim'] = float(ssim(ref_resized, enhanced, channel_axis=2, data_range=255))
+            
+        results['metrics'] = metrics
+        return results

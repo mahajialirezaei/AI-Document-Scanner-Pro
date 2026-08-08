@@ -1,116 +1,71 @@
-// Document Scanner & Enhancer - Frontend JavaScript
-
 document.addEventListener('DOMContentLoaded', function() {
-    const dropzone = document.getElementById('dropzone');
-    const fileInput = document.getElementById('fileInput');
-    const loading = document.getElementById('loading');
-    const results = document.getElementById('results');
-    const rawImage = document.getElementById('rawImage');
-    const enhancedImage = document.getElementById('enhancedImage');
-    const errorDiv = document.getElementById('error');
+    const fileRaw = document.getElementById('fileRaw');
+    const fileRef = document.getElementById('fileRef');
+    const dropzoneRaw = document.getElementById('dropzoneRaw');
+    const dropzoneRef = document.getElementById('dropzoneRef');
+    const processBtn = document.getElementById('processBtn');
+    
+    let rawFile = null;
+    let refFile = null;
 
-    // Click to upload
-    dropzone.addEventListener('click', function() {
-        fileInput.click();
-    });
+    dropzoneRaw.addEventListener('click', () => fileRaw.click());
+    dropzoneRef.addEventListener('click', () => fileRef.click());
 
-    // File input change
-    fileInput.addEventListener('change', function(e) {
-        if (e.target.files.length > 0) {
-            handleFile(e.target.files[0]);
+    fileRaw.addEventListener('change', (e) => {
+        if(e.target.files.length) {
+            rawFile = e.target.files[0];
+            dropzoneRaw.querySelector('.dropzone-text').innerHTML = `✅ ${rawFile.name}`;
+            processBtn.disabled = false;
         }
     });
 
-    // Drag and drop events
-    dropzone.addEventListener('dragover', function(e) {
-        e.preventDefault();
-        dropzone.classList.add('dragover');
-    });
-
-    dropzone.addEventListener('dragleave', function(e) {
-        e.preventDefault();
-        dropzone.classList.remove('dragover');
-    });
-
-    dropzone.addEventListener('drop', function(e) {
-        e.preventDefault();
-        dropzone.classList.remove('dragover');
-        
-        if (e.dataTransfer.files.length > 0) {
-            handleFile(e.dataTransfer.files[0]);
+    fileRef.addEventListener('change', (e) => {
+        if(e.target.files.length) {
+            refFile = e.target.files[0];
+            dropzoneRef.querySelector('.dropzone-text').innerHTML = `✅ ${refFile.name}`;
         }
     });
 
-    // Handle file processing
-    function handleFile(file) {
-        // Validate file type
-        if (!file.type.startsWith('image/')) {
-            showError('Please upload an image file (PNG, JPG, etc.)');
-            return;
-        }
+    processBtn.addEventListener('click', () => {
+        if(!rawFile) return;
+        document.getElementById('results').classList.add('hidden');
+        document.getElementById('metricsPanel').classList.add('hidden');
+        document.getElementById('error').classList.add('hidden');
+        document.getElementById('loading').classList.remove('hidden');
 
-        // Validate file size (10MB limit)
-        if (file.size > 10 * 1024 * 1024) {
-            showError('File size must be less than 10MB');
-            return;
-        }
-
-        // Hide previous results and errors
-        results.classList.add('hidden');
-        errorDiv.classList.add('hidden');
-
-        // Show raw photo preview
-        const objectUrl = URL.createObjectURL(file);
-        rawImage.src = objectUrl;
-        rawImage.onload = function() {
-            URL.revokeObjectURL(objectUrl);
-        };
-
-        // Show loading indicator
-        loading.classList.remove('hidden');
-
-        // Upload and process file
-        uploadAndProcess(file);
-    }
-
-    // Upload file to server
-    function uploadAndProcess(file) {
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('file', rawFile);
+        if(refFile) formData.append('reference_file', refFile);
+        
+        formData.append('corner_method', document.getElementById('cornerMethod').value);
+        formData.append('enhancement_method', document.getElementById('enhancementMethod').value);
+        formData.append('apply_binarization', document.getElementById('applyBinarization').checked);
 
-        fetch('/scan', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => {
-            if (!response.ok) {
-                return response.json().then(err => { throw new Error(err.detail || 'Processing failed'); });
-            }
-            return response.json();
-        })
+        fetch('/scan', { method: 'POST', body: formData })
+        .then(res => res.json().then(data => res.ok ? data : Promise.reject(data)))
         .then(data => {
-            if (data.status === 'success') {
-                // Display enhanced image
-                const base64Image = `data:image/jpeg;base64,${data.enhanced_image}`;
-                enhancedImage.src = base64Image;
-
-                // Hide loading, show results
-                loading.classList.add('hidden');
-                results.classList.remove('hidden');
-            } else {
-                throw new Error('Unexpected response from server');
-            }
+            document.getElementById('loading').classList.add('hidden');
+            
+            // Set Images
+            document.getElementById('cornersImage').src = `data:image/jpeg;base64,${data.corners_image}`;
+            document.getElementById('enhancedImage').src = `data:image/jpeg;base64,${data.enhanced_image}`;
+            
+            // Set Metrics
+            const m = data.metrics;
+            document.getElementById('m-psnr').innerText = m.psnr ? `${m.psnr.toFixed(2)} dB` : 'N/A (No GT)';
+            document.getElementById('m-ssim').innerText = m.ssim ? m.ssim.toFixed(4) : 'N/A';
+            document.getElementById('m-ocr-raw').innerText = m.ocr_raw !== undefined ? `${m.ocr_raw.toFixed(1)}%` : 'N/A';
+            document.getElementById('m-ocr-enh').innerText = m.ocr_enhanced !== undefined ? `${m.ocr_enhanced.toFixed(1)}%` : 'N/A';
+            document.getElementById('m-ocr-tgt').innerText = m.ocr_target !== undefined ? `${m.ocr_target.toFixed(1)}%` : '-';
+            
+            document.getElementById('metricsPanel').classList.remove('hidden');
+            document.getElementById('results').classList.remove('hidden');
         })
-        .catch(error => {
-            console.error('Error:', error);
-            loading.classList.add('hidden');
-            showError(error.message || 'Failed to process image. Please try again.');
+        .catch(err => {
+            document.getElementById('loading').classList.add('hidden');
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = err.detail || 'Processing failed.';
+            errorDiv.classList.remove('hidden');
         });
-    }
-
-    // Show error message
-    function showError(message) {
-        errorDiv.textContent = message;
-        errorDiv.classList.remove('hidden');
-    }
+    });
 });
