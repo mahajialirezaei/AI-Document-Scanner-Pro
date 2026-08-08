@@ -59,7 +59,7 @@ class SobelLoss(nn.Module):
 
 
 class EnhancementLoss(nn.Module):
-    def __init__(self, l1_weight=1.0, edge_weight=2.0, ssim_weight=1.5, text_weight=5.0, color_weight=0.5):
+    def __init__(self, l1_weight=1.0, edge_weight=2.0, ssim_weight=1.5, text_weight=5.0, color_weight=2.0):
         super().__init__()
         self.sobel = SobelLoss()
         self.l1_weight = l1_weight
