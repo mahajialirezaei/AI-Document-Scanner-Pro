@@ -1,134 +1,82 @@
-"""
-FastAPI Web Application for Document Scanning & Enhancement.
-
-This module provides a web-based interface for the document scanning pipeline,
-allowing users to upload images and receive enhanced scans through a REST API.
-"""
-
-import io
 import base64
 import cv2
 import numpy as np
 import torch
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pathlib import Path
+from src.pipelines.inference import DocumentScanningPipeline, load_model
 
-from src.pipelines.inference import DocumentScanningPipeline
-
-# Initialize FastAPI app
-app = FastAPI(
-    title="Document Scanner & Enhancer",
-    description="Web API for document scanning and enhancement using deep learning",
-    version="1.0.0"
-)
-
-# Global pipeline instance
+app = FastAPI(title="Document Scanner & Enhancer API")
 pipeline = None
-
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the document scanning pipeline on startup."""
     global pipeline
-    
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Model paths
-    enhancement_model_path = "checkpoints/enhancement/best_model.pth"
-    corner_model_path = "checkpoints/corner_regression/best_model.pth"
-
-    # Check if model files exist
-    if not Path(enhancement_model_path).exists():
-        print(f"Warning: Enhancement model not found at {enhancement_model_path}")
-    if not Path(corner_model_path).exists():
-        print(f"Warning: Corner model not found at {corner_model_path}")
-
+    # Load all models into a registry
     try:
-        pipeline = DocumentScanningPipeline(
-            corner_model_path=corner_model_path,
-            enhancement_model_path=enhancement_model_path,
-            corner_approach="regression",
-            device=device
-        )
-        print(f"Pipeline initialized successfully on {device}")
+        models_registry = {
+            "heatmap_v2": load_model("corner_heatmap", "checkpoints/corner_heatmap_clean_nodropout_v2/best_model.pth", device),
+            "heatmap_v3": load_model("corner_heatmap", "checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth", device),
+            "regression": load_model("corner_regression", "checkpoints/corner_regression_clean_nodropout/best_model.pth", device),
+            "enh_baseline": load_model("enhancement", "checkpoints/enhancement_clean_nodropout/best_model.pth", device),
+            "enh_regularized": load_model("enhancement", "checkpoints/enhancement_regularized/best_model.pth", device, dropout_rate=0.3)
+        }
+        pipeline = DocumentScanningPipeline(models_registry, device)
+        print("Pipeline & Models initialized successfully.")
     except Exception as e:
-        print(f"Warning: Could not initialize pipeline: {e}")
-        print("Pipeline will be initialized on first request if models become available")
-
+        print(f"Warning: Could not load models during startup: {e}")
 
 @app.get("/")
 async def root():
-    """Serve the main HTML page."""
     return FileResponse("static/index.html")
 
-
-# Mount static files directory
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
 @app.post("/scan")
-async def scan_document(file: UploadFile = File(...)):
-    """
-    Process an uploaded image through the document scanning pipeline.
-
-    Args:
-        file: Uploaded image file (JPEG, PNG, etc.)
-
-    Returns:
-        JSON response with base64-encoded enhanced image
-    """
-    global pipeline
-
-    # Ensure pipeline is initialized
+async def scan_document(
+    file: UploadFile = File(...),
+    reference_file: UploadFile = File(None),
+    corner_method: str = Form("heatmap_v3"),
+    enhancement_method: str = Form("enh_baseline"),
+    apply_binarization: str = Form("false")
+):
     if pipeline is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        enhancement_model_path = "checkpoints/enhancement/best_model.pth"
-        corner_model_path = "checkpoints/corner_regression/best_model.pth"
-
-        try:
-            pipeline = DocumentScanningPipeline(
-                corner_model_path=corner_model_path,
-                enhancement_model_path=enhancement_model_path,
-                corner_approach="regression",
-                device=device
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to initialize pipeline: {str(e)}")
+        raise HTTPException(status_code=500, detail="Pipeline not initialized. Check server logs.")
 
     try:
-        # Read uploaded file
-        contents = await file.read()
+        raw_bytes = await file.read()
+        raw_image = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
+        
+        ref_image = None
+        if reference_file:
+            ref_bytes = await reference_file.read()
+            ref_image = cv2.imdecode(np.frombuffer(ref_bytes, np.uint8), cv2.IMREAD_COLOR)
 
-        # Decode image using OpenCV (returns BGR format)
-        nparr = np.frombuffer(contents, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        do_binarization = apply_binarization.lower() == 'true'
 
-        if image is None:
-            raise HTTPException(status_code=400, detail="Invalid image file")
-
-        # Process image through pipeline (expects BGR format)
-        enhanced_image = pipeline.process(image, return_intermediate=False)
-
-        # Convert enhanced BGR image to JPEG format
-        _, buffer = cv2.imencode('.jpg', enhanced_image, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
-
-        # Encode to base64
-        base64_string = base64.b64encode(buffer).decode('utf-8')
-
-        return JSONResponse(
-            content={
-                "status": "success",
-                "enhanced_image": base64_string
-            }
+        results = pipeline.process(
+            raw_image=raw_image,
+            corner_method=corner_method,
+            enhancement_method=enhancement_method,
+            apply_binarization=do_binarization,
+            reference_img=ref_image
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+        _, buf_enh = cv2.imencode('.jpg', results['enhanced'], [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+        _, buf_crn = cv2.imencode('.jpg', results['corners_image'], [int(cv2.IMWRITE_JPEG_QUALITY), 95])
 
+        return JSONResponse(content={
+            "status": "success",
+            "enhanced_image": base64.b64encode(buf_enh).decode('utf-8'),
+            "corners_image": base64.b64encode(buf_crn).decode('utf-8'),
+            "metrics": results.get('metrics', {})
+        })
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
