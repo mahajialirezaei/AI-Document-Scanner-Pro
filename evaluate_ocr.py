@@ -25,9 +25,10 @@ def order_points(pts: np.ndarray) -> np.ndarray:
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate OCR Readability")
-    parser.add_argument("--corner-ckpt", type=str, required=True)
-    parser.add_argument("--enhancement-ckpt", type=str, required=True)
+    parser.add_argument("--corner-ckpt", type=str, default="", help="Path to corner model")
+    parser.add_argument("--enhancement-ckpt", type=str, required=True, help="Path to enhancement model")
     parser.add_argument("--apply-binarization", action="store_true", help="Apply adaptive binarization to enhance OCR")
+    parser.add_argument("--use-gt-corners", action="store_true", help="Use Ground Truth corners")
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -45,13 +46,16 @@ def main():
     enhancement_model.load_state_dict(enhancement_ckpt['model_state_dict'])
     enhancement_model.eval()
 
-    corner_model = CornerHeatmapModel(dropout_rate=0.0).to(device)
-    corner_ckpt = torch.load(args.corner_ckpt, map_location=device, weights_only=True)
-    state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
-    if list(state_dict.keys())[0].startswith('module.'):
-        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-    corner_model.load_state_dict(state_dict)
-    corner_model.eval()
+    if not args.use_gt_corners:
+        if not args.corner_ckpt:
+            raise ValueError("--corner-ckpt is required unless --use-gt-corners is used.")
+        corner_model = CornerHeatmapModel(dropout_rate=0.0).to(device)
+        corner_ckpt = torch.load(args.corner_ckpt, map_location=device, weights_only=True)
+        state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
+        if list(state_dict.keys())[0].startswith('module.'):
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        corner_model.load_state_dict(state_dict)
+        corner_model.eval()
 
     avg_metrics = {'deg_conf': [], 'enh_conf': [], 'ref_conf': []}
 
@@ -61,19 +65,23 @@ def main():
         raw_bgr = cv2.cvtColor(tensor_to_rgb(sample['raw_photo']), cv2.COLOR_RGB2BGR)
         clean_rgb = tensor_to_rgb(sample['clean_target'])
         
-        raw_tensor_resized = TF.resize(sample['raw_photo'], [256, 256]).unsqueeze(0).to(device)
+        gt_corners = sample['corners'].numpy()
+        h, w = raw_bgr.shape[:2]
         
-        with torch.no_grad():
-            _, pred_heatmaps = corner_model(raw_tensor_resized)
-            heatmaps = pred_heatmaps.squeeze(0).cpu().numpy()
-            pred_corners = []
-            for i in range(4):
-                hm = cv2.GaussianBlur(heatmaps[i], (5, 5), 0)
-                y, x = np.unravel_index(np.argmax(hm), hm.shape)
-                pred_corners.append([x / hm.shape[1], y / hm.shape[0]])
-            pred_corners = np.array(pred_corners, dtype=np.float32)
-
-        pred_corners_pixel = order_points((pred_corners * [raw_bgr.shape[1], raw_bgr.shape[0]]).astype(np.float32))
+        if args.use_gt_corners:
+            pred_corners_pixel = order_points((gt_corners * [w, h]).astype(np.float32))
+        else:
+            raw_tensor_resized = TF.resize(sample['raw_photo'], [256, 256]).unsqueeze(0).to(device)
+            with torch.no_grad():
+                _, pred_heatmaps = corner_model(raw_tensor_resized)
+                heatmaps = pred_heatmaps.squeeze(0).cpu().numpy()
+                pred_corners = []
+                for i in range(4):
+                    hm = cv2.GaussianBlur(heatmaps[i], (5, 5), 0)
+                    y, x = np.unravel_index(np.argmax(hm), hm.shape)
+                    pred_corners.append([x / hm.shape[1], y / hm.shape[0]])
+                pred_corners = np.array(pred_corners, dtype=np.float32)
+            pred_corners_pixel = order_points((pred_corners * [w, h]).astype(np.float32))
         
         dst_pts = np.array([[0, 0], [1024 - 1, 0], [1024 - 1, 1024 - 1], [0, 1024 - 1]], dtype=np.float32)
         matrix = cv2.getPerspectiveTransform(pred_corners_pixel, dst_pts)
@@ -85,13 +93,11 @@ def main():
             
         enhanced_rgb = tensor_to_rgb(enhanced_tensor.squeeze(0))
         
-        # Apply Adaptive Binarization if flag is provided
         if args.apply_binarization:
             enhanced_rgb = apply_adaptive_binarization(enhanced_rgb)
             
         clean_rgb_resized = cv2.resize(clean_rgb, (1024, 1024))
 
-        # OCR Evaluation
         ocr_res = compare_readability(rectified_rgb, enhanced_rgb, clean_rgb_resized)
         
         avg_metrics['deg_conf'].append(ocr_res['degraded_confidence'])
