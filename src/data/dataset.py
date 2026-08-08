@@ -77,6 +77,42 @@ class SyntheticDocumentDataset(Dataset):
         pts = np.array([[tl_x, tl_y], [tr_x, tr_y], [br_x, br_y], [bl_x, bl_y]], dtype=np.float32)
         return pts
 
+    def _add_non_text_elements(self, img: np.ndarray, probability: float = 0.20) -> np.ndarray:
+        """
+        Collages random graphics, logos, and thick UI elements onto the clean scan
+        to teach the Enhancement network to preserve non-text structures.
+        """
+        if not self.use_degradation or random.random() > probability:
+            return img
+            
+        result = img.copy()
+        h, w = img.shape[:2]
+        
+        for _ in range(random.randint(1, 3)):
+            elem_w = random.randint(int(w * 0.1), int(w * 0.4))
+            elem_h = random.randint(int(h * 0.05), int(h * 0.3))
+            x1 = random.randint(0, w - elem_w)
+            y1 = random.randint(0, h - elem_h)
+            
+            elem_type = random.choice(['solid', 'gradient', 'noise_photo'])
+            
+            if elem_type == 'solid':
+                color = (random.randint(40, 200), random.randint(40, 200), random.randint(40, 200))
+                cv2.rectangle(result, (x1, y1), (x1 + elem_w, y1 + elem_h), color, -1)
+            elif elem_type == 'gradient':
+                grad = np.linspace(random.randint(0, 100), random.randint(150, 255), elem_w)
+                grad = np.tile(grad, (elem_h, 1)).astype(np.uint8)
+                grad_bgr = cv2.applyColorMap(grad, cv2.COLORMAP_BONE) 
+                result[y1:y1+elem_h, x1:x1+elem_w] = grad_bgr
+            elif elem_type == 'noise_photo':
+                noise = np.random.randint(0, 255, (elem_h, elem_w, 3), dtype=np.uint8)
+                noise = cv2.GaussianBlur(noise, (11, 11), 0)
+                base = np.full((elem_h, elem_w, 3), (random.randint(100,200), random.randint(100,200), random.randint(100,200)), dtype=np.uint8)
+                patch = cv2.addWeighted(noise, 0.6, base, 0.4, 0)
+                result[y1:y1+elem_h, x1:x1+elem_w] = patch
+                
+        return result
+
     def _add_binding_artifacts(self, img: np.ndarray, probability: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
         h, w = img.shape[:2]
         hole_mask = np.ones((h, w), dtype=np.uint8) * 255
@@ -110,6 +146,40 @@ class SyntheticDocumentDataset(Dataset):
                 result[:, -shadow_width:] = np.clip(result[:, -shadow_width:] * gradient, 0, 255).astype(np.uint8)
                 
         return result, hole_mask
+
+    def _apply_cylindrical_warp(self, img: np.ndarray, hole_mask: np.ndarray, probability: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Simulates the 3D curvature of an open book near the spine.
+        """
+        if not self.use_degradation or random.random() > probability:
+            return img, hole_mask
+            
+        h, w = img.shape[:2]
+        spine_left = random.random() > 0.5
+        
+        x, y = np.meshgrid(np.arange(w), np.arange(h))
+        x_norm = x / w
+        
+        map_x = x.astype(np.float32)
+        map_y = y.astype(np.float32)
+        
+        curvature = random.uniform(0.03, 0.10) * w
+        
+        if spine_left:
+            dy = np.sin((1 - x_norm) * np.pi) * curvature
+            dx = (1 - x_norm)**2 * (curvature * 0.4)
+            map_y += dy * (y / h - 0.5) * 1.2
+            map_x += dx
+        else:
+            dy = np.sin(x_norm * np.pi) * curvature
+            dx = - (x_norm)**2 * (curvature * 0.4)
+            map_y += dy * (y / h - 0.5) * 1.2
+            map_x += dx
+            
+        warped_img = cv2.remap(img, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        warped_mask = cv2.remap(hole_mask, map_x, map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=255)
+        
+        return warped_img, warped_mask
 
     def _add_adjacent_page(self, img: np.ndarray, corners: np.ndarray) -> np.ndarray:
         if random.random() > 0.3:
@@ -190,7 +260,6 @@ class SyntheticDocumentDataset(Dataset):
                 mask = np.any(overlay > 0, axis=2)[..., None]
                 result = np.where(mask, overlay, result)
 
-        # 2. Random Polygon Distractors (e.g. pencil cases, clips)
         if random.random() < 0.2:
             overlay = np.zeros_like(result)
             corner_idx = random.randint(0, 3)
@@ -209,7 +278,6 @@ class SyntheticDocumentDataset(Dataset):
             mask = np.any(overlay > 0, axis=2)[..., None]
             result = np.where(mask, overlay, result)
 
-        # 3. Finger Occlusion
         if random.random() < 0.15:
             overlay = np.zeros_like(result)
             edge_idx = random.choice([(0, 1), (1, 2), (2, 3), (3, 0)])
@@ -345,10 +413,20 @@ class SyntheticDocumentDataset(Dataset):
         bg_path = random.choice(self.backgrounds)
         
         clean_scan = cv2.imread(str(scan_path))
-        
         clean_scan = cv2.resize(clean_scan, (self.image_size[1], self.image_size[0]))
         
+        if self.use_degradation and random.random() < 0.04:
+            paper_color = np.array([random.randint(180, 255), 
+                                    random.randint(180, 255), 
+                                    random.randint(180, 255)], dtype=np.float32) / 255.0
+            colored_scan = (clean_scan.astype(np.float32) / 255.0) * paper_color
+            clean_scan = (np.clip(colored_scan, 0, 1) * 255).astype(np.uint8)
+
+        clean_scan = self._add_non_text_elements(clean_scan, probability=0.20)
+        
         clean_scan, hole_mask = self._add_binding_artifacts(clean_scan, probability=0.30)
+        
+        clean_scan, hole_mask = self._apply_cylindrical_warp(clean_scan, hole_mask, probability=0.25)
         
         if self.use_degradation and self.degradation_pipeline:
             bgra = cv2.cvtColor(clean_scan, cv2.COLOR_BGR2BGRA)
@@ -373,13 +451,11 @@ class SyntheticDocumentDataset(Dataset):
         
         H = cv2.getPerspectiveTransform(src_pts, dst_pts)
         warped_scan = cv2.warpPerspective(clean_scan, H, (bg_w, bg_h))
-        
         warped_mask = cv2.warpPerspective(hole_mask, H, (bg_w, bg_h), flags=cv2.INTER_NEAREST)
         
         composite = bg_image.copy()
         composite[warped_mask == 255] = warped_scan[warped_mask == 255]
 
-        # Apply specific ordered background distractions
         if self.use_degradation:
             composite = self._add_adjacent_page(composite, dst_pts)
             composite = self._add_distractors(composite, dst_pts)
