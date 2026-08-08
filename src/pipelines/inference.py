@@ -72,6 +72,29 @@ def enhance_document(model: torch.nn.Module, rectified_image: np.ndarray, device
         
     return output_bgr, output_tensor
 
+def apply_adaptive_binarization(image: np.ndarray) -> np.ndarray:
+    """
+    Applies adaptive Gaussian thresholding to maximize OCR readability.
+    Maintains a 3-channel output for pipeline compatibility.
+    """
+    if len(image.shape) == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.shape[2] == 3 else image
+    else:
+        gray = image
+
+    # Median blur removes high-frequency noise (like salt-and-pepper) before thresholding
+    blurred = cv2.medianBlur(gray, 3)
+    
+    # Adaptive Threshold (Gaussian). Block size 51 and C=15 are optimized for 1024x1024 text
+    binary = cv2.adaptiveThreshold(
+        blurred, 255, 
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY, 
+        51, 15
+    )
+    
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
 def detect_corners_regression(model: torch.nn.Module, raw_image: np.ndarray, confidence_threshold: float = 0.5, device: str = None) -> Tuple[np.ndarray, float]:
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -227,7 +250,7 @@ class DocumentScanningPipeline:
             
         self.enhancement_model = load_model('enhancement', enhancement_model_path, device, dropout_rate)
         
-    def process(self, raw_image: np.ndarray, return_intermediate: bool = False) -> Union[np.ndarray, Dict[str, np.ndarray]]:
+    def process(self, raw_image: np.ndarray, return_intermediate: bool = False, apply_binarization: bool = False) -> Union[np.ndarray, Dict[str, np.ndarray]]:
         results = {}
         if self.corner_approach == 'regression':
             corners, confidence = detect_corners_regression(self.corner_model, raw_image, device=self.device)
@@ -242,6 +265,10 @@ class DocumentScanningPipeline:
         results['rectified'] = rectified
         
         enhanced, _ = enhance_document(self.enhancement_model, rectified, device=self.device, image_size=1024)
+        
+        if apply_binarization:
+            enhanced = apply_adaptive_binarization(enhanced)
+            
         results['enhanced'] = enhanced
         
         if return_intermediate:
