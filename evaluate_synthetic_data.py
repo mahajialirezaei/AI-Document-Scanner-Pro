@@ -51,7 +51,7 @@ def main():
         clean_scans_dir=args.clean_scans,
         backgrounds_dir=args.backgrounds,
         image_size=(args.image_size, args.image_size),
-        seed=42,
+        seed=42, 
         num_eval_samples=args.num_samples,
         train_samples_per_epoch=10 
     )
@@ -60,7 +60,11 @@ def main():
     print(f"Loading Enhancement Model from: {args.enhancement_ckpt}")
     enhancement_model = EnhancementUNet(dropout_rate=0.0).to(device)
     enhancement_ckpt = torch.load(args.enhancement_ckpt, map_location=device, weights_only=True)
-    enhancement_model.load_state_dict(enhancement_ckpt['model_state_dict'])
+    
+    enhancement_state = enhancement_ckpt.get('model_state_dict', enhancement_ckpt)
+    if list(enhancement_state.keys())[0].startswith('module.'):
+        enhancement_state = {k.replace('module.', ''): v for k, v in enhancement_state.items()}
+    enhancement_model.load_state_dict(enhancement_state)
     enhancement_model.eval()
 
     if not args.use_gt_corners:
@@ -72,11 +76,12 @@ def main():
             corner_model = CornerRegressionModel(dropout_rate=0.0).to(device)
         else:
             corner_model = CornerHeatmapModel(dropout_rate=0.0).to(device)
+            
         corner_ckpt = torch.load(args.corner_ckpt, map_location=device, weights_only=True)
-        state_dict = corner_ckpt.get('model_state_dict', corner_ckpt)
-        if list(state_dict.keys())[0].startswith('module.'):
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        corner_model.load_state_dict(state_dict)
+        corner_state = corner_ckpt.get('model_state_dict', corner_ckpt)
+        if list(corner_state.keys())[0].startswith('module.'):
+            corner_state = {k.replace('module.', ''): v for k, v in corner_state.items()}
+        corner_model.load_state_dict(corner_state)
         corner_model.eval()
     else:
         print("Using Ground Truth Corners (Corner Model Bypassed).")
@@ -98,38 +103,38 @@ def main():
 
         if args.use_gt_corners:
             pred_corners_pixel = gt_corners_pixel.copy()
+            # استفاده مستقیم از تنسور از پیش آماده شده در dataset.py
+            rectified_tensor = sample['rectified_input'].unsqueeze(0).to(device)
+            rectified_rgb = tensor_to_rgb(sample['rectified_input'])
         else:
             raw_tensor_resized = TF.resize(raw_tensor, [256, 256]).unsqueeze(0).to(device)
             with torch.no_grad():
                 if is_regression:
                     pred_coords = corner_model(raw_tensor_resized)
-                    pred_corners = pred_coords.squeeze(0).cpu().numpy().reshape(4, 2)
                 else:
-                    _, pred_heatmaps = corner_model(raw_tensor_resized)
-                    heatmaps = pred_heatmaps.squeeze(0).cpu().numpy()
-                    pred_corners = []
-                    for i in range(4):
-                        hm = cv2.GaussianBlur(heatmaps[i], (5, 5), 0)
-                        y, x = np.unravel_index(np.argmax(hm), hm.shape)
-                        pred_corners.append([x / hm.shape[1], y / hm.shape[0]])
-                    pred_corners = np.array(pred_corners, dtype=np.float32)
+                    # استفاده از SoftArgmax2D داخلی مدل به جای محاسبه دستی روی Heatmap
+                    pred_coords, _ = corner_model(raw_tensor_resized)
+                    
+            pred_corners = pred_coords.squeeze(0).cpu().numpy().reshape(4, 2)
             pred_corners_pixel = order_points((pred_corners * [w, h]).astype(np.float32))
 
-        corner_mse = np.mean((pred_corners_pixel - gt_corners_pixel) ** 2)
-        corner_mae = np.mean(np.abs(pred_corners_pixel - gt_corners_pixel))
-        corner_mle = np.mean(np.sqrt(np.sum((pred_corners_pixel - gt_corners_pixel) ** 2, axis=1)))
-        
-        metrics['corner_mse'].append(corner_mse)
-        metrics['corner_mae'].append(corner_mae)
-        metrics['corner_mle'].append(corner_mle)
+            dst_pts = np.array([[0, 0], [args.image_size - 1, 0], [args.image_size - 1, args.image_size - 1], [0, args.image_size - 1]], dtype=np.float32)
+            matrix = cv2.getPerspectiveTransform(pred_corners_pixel, dst_pts)
+            rectified_bgr = cv2.warpPerspective(raw_bgr, matrix, (args.image_size, args.image_size))
+            rectified_rgb = cv2.cvtColor(rectified_bgr, cv2.COLOR_BGR2RGB)
+            rectified_tensor = TF.to_tensor(rectified_rgb).unsqueeze(0).to(device)
 
-        dst_pts = np.array([[0, 0], [args.image_size - 1, 0], [args.image_size - 1, args.image_size - 1], [0, args.image_size - 1]], dtype=np.float32)
-        matrix = cv2.getPerspectiveTransform(pred_corners_pixel, dst_pts)
-        rectified_bgr = cv2.warpPerspective(raw_bgr, matrix, (args.image_size, args.image_size))
-        rectified_rgb = cv2.cvtColor(rectified_bgr, cv2.COLOR_BGR2RGB)
+        if not args.use_gt_corners:
+            corner_mse = np.mean((pred_corners_pixel - gt_corners_pixel) ** 2)
+            corner_mae = np.mean(np.abs(pred_corners_pixel - gt_corners_pixel))
+            corner_mle = np.mean(np.sqrt(np.sum((pred_corners_pixel - gt_corners_pixel) ** 2, axis=1)))
+            
+            metrics['corner_mse'].append(corner_mse)
+            metrics['corner_mae'].append(corner_mae)
+            metrics['corner_mle'].append(corner_mle)
 
         with torch.no_grad():
-            enhanced_tensor = enhancement_model(TF.to_tensor(rectified_rgb).unsqueeze(0).to(device))
+            enhanced_tensor = enhancement_model(rectified_tensor)
             
         enhanced_rgb = tensor_to_rgb(enhanced_tensor.squeeze(0))
         
