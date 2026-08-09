@@ -26,7 +26,9 @@ class DropoutScheduler:
         self.step(0)
 
     def _find_dropout_layers(self) -> List[nn.Dropout]:
-        return [module for module in self.model.modules() if isinstance(module, nn.Dropout)]
+        # FIX: Only target layers that were explicitly initialized with a dropout rate > 0 in model.py
+        # This prevents Global Dropout and protects the early high-resolution layers.
+        return [module for module in self.model.modules() if isinstance(module, nn.Dropout) and module.p > 0.0]
 
     def step(self, epoch: int) -> None:
         if not self.dropout_layers:
