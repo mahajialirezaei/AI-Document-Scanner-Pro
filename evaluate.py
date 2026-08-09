@@ -143,7 +143,7 @@ def main():
                 if is_regression:
                     pred_coords = corner_model(raw_tensor_resized)
                 else:
-                    pred_coords, _ = corner_model(raw_tensor_resized) # Uses SoftArgmax directly
+                    pred_coords, _ = corner_model(raw_tensor_resized) 
                     
             pred_corners = pred_coords.squeeze(0).cpu().numpy().reshape(4, 2)
             pred_corners_pixel = order_points((pred_corners * [w, h]).astype(np.float32))
@@ -157,9 +157,10 @@ def main():
         # Corner Metrics Update
         if not args.use_gt_corners:
             corner_mse = np.mean((pred_corners_pixel - gt_corners_pixel) ** 2)
+            corner_mae = np.mean(np.abs(pred_corners_pixel - gt_corners_pixel))
             corner_mle = np.mean(np.sqrt(np.sum((pred_corners_pixel - gt_corners_pixel) ** 2, axis=1)))
             metrics['corner_mse'].append(corner_mse)
-            metrics['corner_mae'].append(np.mean(np.abs(pred_corners_pixel - gt_corners_pixel)))
+            metrics['corner_mae'].append(corner_mae)
             metrics['corner_mle'].append(corner_mle)
 
         # Enhancement Execution
@@ -229,7 +230,15 @@ def main():
         plt.savefig(save_path, bbox_inches='tight', dpi=150)
         plt.close()
 
-        print(f"[{idx+1:02d}/{total_samples:02d}] Saved: {save_path} | OCR (Raw -> Enh): {ocr_res['degraded_confidence']:.1f}% -> {ocr_res['enhanced_confidence']:.1f}%")
+        log_msg = f"[{idx+1:02d}/{total_samples:02d}] Saved: {save_path} | OCR (Raw -> Enh): {ocr_res['degraded_confidence']:.1f}% -> {ocr_res['enhanced_confidence']:.1f}%"
+        
+        if args.dataset_type == "synthetic":
+            log_msg += f" | PSNR: {val_psnr:.2f} dB | SSIM: {val_ssim:.4f}"
+            
+        if not args.use_gt_corners:
+            log_msg += f" | Corner MSE: {corner_mse:.2f} px^2 | MAE: {corner_mae:.2f} px | MLE: {corner_mle:.2f} px"
+
+        print(log_msg)
 
     # Final Aggregated Report
     print("\n" + "="*50)
