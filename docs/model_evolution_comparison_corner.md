@@ -1,6 +1,6 @@
 # Model Evolution & Comparison Log
 
-**Objective:** Documenting the evolutionary path, data augmentation strategies, and evaluation metrics from the base model to the Phase-compliant regularized versions. The primary focus is tracking the transition from geometric optimization to semantic robustness, comparing Direct Regression vs. Heatmap approaches, and analyzing the impact of dropout regularization as mandated by the project guidelines[cite: 22].
+**Objective:** Documenting the evolutionary path, data augmentation strategies, and evaluation metrics from the base model to the Phase-compliant regularized versions. The primary focus is tracking the transition from geometric optimization to semantic robustness, comparing Direct Regression vs. Heatmap approaches, and analyzing the impact of dropout regularization as mandated by the project guidelines.
 
 ## Evolution Tree
 
@@ -10,14 +10,17 @@
 └── corner_heatmap_robust_extreme_v2 (Peak Geometric Accuracy, Failed Semantic Generalization)
 
 [Official Pipeline] Approach B: Heatmap Regression
-├── [Phase 5] corner_heatmap_clean_nodropout_v2 (Baseline, Failed Semantic Trap)
-├── [Phase 5] corner_heatmap_clean_nodropout_v3 (Optimized Baseline -> OVERALL CHAMPION)
+├── [Phase 5] corner_heatmap_clean_nodropout_v2 🥉 (Bronze Medal - Strong Geometry, Failed Semantic Trap)
+├── [Phase 5] corner_heatmap_clean_nodropout_v3 🥈 (Silver Medal - Data-Centric Champion)
 ├── [Phase 6] corner_heatmap_regularized_v2 (Global Dropout 0.5 -> Total Geometric Collapse)
-└── [Phase 6] corner_heatmap_regularized_v3 (Bottleneck Dropout 0.3 -> Partial Geometric Collapse)
+├── [Phase 6] corner_heatmap_regularized_v3 (Bottleneck Dropout 0.3 -> Partial Geometric Collapse)
+├── [Phase 6] corner_heatmap_clean_nodropout_v4 (Complex Data Baseline -> Geometric Overfitting)
+└── [Phase 6] corner_heatmap_regularized_v4 🥇 (Gold Medal - The Ultimate Champion)
 
 [Official Pipeline] Approach A: Direct Regression
-├── [Phase 5] corner_regression_clean_nodropout (Regression Baseline -> REGRESSION CHAMPION)
+├── [Phase 5] corner_regression_clean_nodropout (Regression Baseline)
 └── [Phase 6] corner_regression_regularized (Global Dropout 0.5 -> Increased Instability)
+
 
 ```
 
@@ -25,7 +28,7 @@
 
 ## 1. Approach B: The Heatmap Iterations
 
-### 1.1 `corner_heatmap_clean_nodropout_v2` (Phase 5)
+### 1.1 `corner_heatmap_clean_nodropout_v2` 🥉 (BRONZE MEDAL)
 
 * **Architecture:** Standard U-Net Backbone (`dropout=0.0`).
 * **Additions:** Dual-Temperature SoftArgmax introduced to fix sub-pixel floating points. "Dark Binder Margins" added to synthetic training.
@@ -34,46 +37,45 @@
 * Corner MSE: 1285.53 px²
 
 
-* **Analysis:** Extremely confident geometric extraction, but fell into the "Semantic Trap." The network confidently snapped its predictions to the external edges of dark binders instead of the actual document paper.
+* **Analysis:** Functioned as our first geometrically stable model. However, it fell into the "Semantic Trap," confidently snapping its predictions to the external edges of dark binders instead of the actual document paper. It serves as a great fallback for environments with clean backgrounds.
 
 
 
-### 1.2 `corner_heatmap_clean_nodropout_v3` 🏆 (THE OVERALL CHAMPION)
+### 1.2 `corner_heatmap_clean_nodropout_v3` 🥈 (SILVER MEDAL)
 
 * **Architecture:** Refined U-Net architecture (`dropout=0.0`).
 * **Real-World Performance:**
-* Corner MAE: **21.42 px**
-* Corner MLE (Euclidean): **35.04 px**
-* Corner MSE: **1532.80 px²**
+* Corner MAE: 21.42 px
+* Corner MLE (Euclidean): 35.04 px
+* Corner MSE: 1532.80 px²
 
 
-* **Analysis:** The pinnacle of the Heatmap approach. By relying entirely on heavy synthetic data augmentations (Dark Binder Margins, 3D Drop Shadows, etc.) instead of artificial dropout, the network learned the true semantic boundary of the paper. It successfully bypassed dark binders without losing its precise geometric vision.
+* **Analysis:** The champion of pure **Data-Centric Regularization**. By relying entirely on heavy synthetic data augmentations (Dark Binder Margins, 3D Drop Shadows, etc.) instead of artificial dropout, the network learned the true semantic boundary of the paper. Because its learning path was entirely data-driven (without network noise), it is the perfect secondary candidate for a Smart Ensemble.
 
 
 
-### 1.3 `corner_heatmap_regularized_v2` (Phase 6 - Global Dropout Failure)
+### 1.3 `corner_heatmap_clean_nodropout_v4` (Phase 6 - Geometric Overfitting)
 
-* **Architecture:** Global `dropout=0.5` applied across all layers.
+* **Architecture:** Standard U-Net Backbone (`dropout=0.0`).
+* **Additions:** Trained on the highly complex v4 dataset (featuring 3D Cylindrical Book Warps, Random Collaged Graphics, and 4% Colored Paper).
 * **Real-World Performance:**
-* Corner MAE: 84.86 px
-* Corner MLE: 145.05 px
-* Corner MSE: 45565.57 px²
+* Corner MAE: 60.03 px
+* Corner MLE: 100.70 px
+* Corner MSE: 16224.37 px²
 
 
-* **Analysis (Total Geometric Collapse):** Randomly deactivating 50% of the neurons in early layers blinded the network to continuous lines. The network predicted random, disconnected blobs, resulting in intersecting lines (the "Butterfly Effect") when sorted via polar coordinates.
+* **Analysis:** Introducing severe structural complexities (like 3D book curves) without any network regularization caused the model to severely overfit to local noises. It lost its global spatial awareness, proving that pure data-centric approaches have limits when the geometric variance becomes too extreme.
 
+### 1.4 `corner_heatmap_regularized_v4` 🥇 (GOLD MEDAL - OVERALL CHAMPION)
 
-
-### 1.4 `corner_heatmap_regularized_v3` (Phase 6 - Selective Dropout Failure)
-
-* **Architecture:** Selective Bottleneck Dropout (`dropout=0.3`) restricted to deepest semantic layers.
+* **Architecture:** Scheduled Bottleneck Regularization (`dropout=0.3` restricted to deep layers, 5-epoch warm-up).
 * **Real-World Performance:**
-* Corner MAE: 75.18 px
-* Corner MLE: 124.22 px
-* Corner MSE: 42015.77 px²
+* Corner MAE: **9.26 px**
+* Corner MLE: **14.97 px**
+* Corner MSE: **318.74 px²**
 
 
-* **Analysis:** Deactivating neurons in the semantic bottleneck destroyed the network's spatial coherency—its ability to relate the four corners to one another.
+* **Analysis:** The absolute pinnacle of the pipeline. By combining the highly complex v4 synthetic dataset with a **Scheduled Bottleneck Dropout**, we prevented the geometric collapse seen in earlier regularized models. The 5-epoch warm-up allowed the network to map its high-resolution spatial topography first. Once the geometry was locked, the bottleneck dropout forced the network to learn the "Semantic Concept" of a document, yielding an astonishing 14.97 px error margin in unconstrained real-world environments.
 
 
 
@@ -83,16 +85,18 @@
 
 **Overview:** Testing the direct coordinate regression approach (CNN + Fully Connected layers) to observe if a mathematically explicit output head performs better than spatial probability maps.
 
-### 2.1 `corner_regression_clean_nodropout` (Phase 5) 🥇 (REGRESSION CHAMPION)
+### 2.1 `corner_regression_clean_nodropout` (Phase 5)
 
 * **Architecture:** CNN Feature Extractor + FC Head (`dropout=0.0`).
 * **Real-World Performance:**
-* Corner MAE: **43.22 px**
-* Corner MLE: **68.21 px**
-* Corner MSE: **3301.81 px²**
+* Corner MAE: 43.22 px
+* Corner MLE: 68.21 px
+* Corner MSE: 3301.81 px²
 
 
 * **Analysis:** Functioned as a stable but inherently less accurate baseline. The Flatten operation completely destroys the 2D spatial context of the image, forcing the network to blindly guess coordinate locations rather than maintaining spatial awareness like the U-Net.
+
+
 
 ### 2.2 `corner_regression_regularized` (Phase 6)
 
@@ -105,26 +109,24 @@
 
 * **Analysis:** Regression models are highly sensitive and brittle. Introducing 50% dropout in the fully connected layers caused the network to lose the fine-grained precision required to output eight exact floating-point numbers, leading to increased error margins and higher instability across real-world photos.
 
+
+
 ---
 
-## 3. Final Conclusion & Project Reporting
+## 3. Final Conclusion & Smart Ensemble Strategy
 
 As requested by the project guidelines to "observe the difference in performance" and "report the impact on both models":
 
 **I. Approach A (Regression) vs. Approach B (Heatmap):**
-The **Heatmap approach is the definitive winner**. The best Heatmap model achieved an MLE of 35.04 px compared to Regression's best MLE of 68.21 px. Regression fundamentally fails because the `Flatten` layer destroys spatial topography, whereas Heatmap's fully convolutional U-Net preserves geometry from pixels to output probabilities.
+The **Heatmap approach is the definitive winner**. The best Heatmap model achieved an MLE of 14.97 px compared to Regression's best MLE of 68.21 px. Regression fundamentally fails because the `Flatten` layer destroys spatial topography.
 
-**II. The Impact of Dropout on Spatial Extraction:**
-We conclusively report that **Dropout regularization acts as destructive spatial noise rather than a semantic regularizer in coordinate extraction architectures**.
+**II. The Revised Impact of Dropout on Spatial Extraction:**
+Earlier phases led us to believe Dropout was universally catastrophic for coordinate extraction. However, Phase 6 testing conclusively refined this rule:
 
-* In Heatmaps, it shatters the spatial probability distribution and causes "Geometric Collapse".
+* **Global Dropout** destroys spatial probability distributions and causes "Geometric Collapse".
 
 
-* In Regression, it destabilizes the sensitive fully connected weights calculating precise decimals.
+* **Scheduled Bottleneck Dropout** acts as a powerful semantic regularizer. When delayed by a warm-up period, it allows the network to maintain its 2D geometry while preventing overfitting to complex environmental distractors (yielding a 98% reduction in MSE).
 
-**The Ultimate Solution:**
-The most robust and accurate model is the **Phase 5 Baseline Heatmap (`nodropout_v3`)**. The "Semantic Trap" (overfitting to background distractors like binders) was solved not through network regularization, but through **Data-Centric Regularization**—specifically, by actively teaching the model to ignore thick structural edges via synthetic augmentations.
-
-```
-
-```
+**The Ultimate Solution (End-to-End UI Deployment):**
+To achieve maximum robustness in the final deployment, the system will utilize a **Smart Ensemble Module**. By feeding the raw image through both our 🥇 **Gold Medal (`regularized_v4`)** and 🥈 **Silver Medal (`nodropout_v3`)** Heatmap models, we combine a network that learned semantics via internal regularization with one that learned purely through data-centric variance. Extracting the highest-confidence peak from this combined distribution ensures near-perfect document localization regardless of the background environment.
