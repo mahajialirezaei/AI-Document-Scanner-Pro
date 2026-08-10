@@ -15,14 +15,21 @@ async def startup_event():
     global pipeline
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Load all models into a registry
+    # Load all models into a registry based on their medal rankings
     try:
         models_registry = {
-            "heatmap_v2": load_model("corner_heatmap", "checkpoints/corner_heatmap_clean_nodropout_v2/best_model.pth", device),
+            # 🥇 Gold Medal Models (Ultimate Champions)
+            "heatmap_v4_reg": load_model("corner_heatmap", "checkpoints/corner_heatmap_regularized_v4/best_model.pth", device, dropout_rate=0.3),
+            "enh_regularized_v2": load_model("enhancement", "checkpoints/enhancement_regularized_v2/best_model.pth", device, dropout_rate=0.3),
+            
+            # 🥈 Silver Medal Models (Strong Baselines / Highest PSNR)
             "heatmap_v3": load_model("corner_heatmap", "checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth", device),
-            "regression": load_model("corner_regression", "checkpoints/corner_regression_clean_nodropout/best_model.pth", device),
+            "enh_clean_v2": load_model("enhancement", "checkpoints/enhancement_clean_nodropout_v2/best_model.pth", device),
+            
+            # 🥉 Bronze & Legacy Models (For Comparison)
+            "heatmap_v2": load_model("corner_heatmap", "checkpoints/corner_heatmap_clean_nodropout_v2/best_model.pth", device),
             "enh_baseline": load_model("enhancement", "checkpoints/enhancement_clean_nodropout/best_model.pth", device),
-            "enh_regularized": load_model("enhancement", "checkpoints/enhancement_regularized/best_model.pth", device, dropout_rate=0.3)
+            "regression": load_model("corner_regression", "checkpoints/corner_regression_clean_nodropout/best_model.pth", device)
         }
         pipeline = DocumentScanningPipeline(models_registry, device)
         print("Pipeline & Models initialized successfully.")
@@ -39,8 +46,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 async def scan_document(
     file: UploadFile = File(...),
     reference_file: UploadFile = File(None),
-    corner_method: str = Form("heatmap_v3"),
-    enhancement_method: str = Form("enh_baseline"),
+    corner_method: str = Form("ensemble"),
+    enhancement_method: str = Form("enh_regularized_v2"),
     apply_binarization: str = Form("false")
 ):
     if pipeline is None:
