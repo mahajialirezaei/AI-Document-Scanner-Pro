@@ -1,5 +1,6 @@
 """
 Inference pipelines for document scanning and enhancement.
+Includes Smart Ensemble geometry constraints and statistical bypass logic (Gatekeepers).
 """
 
 import cv2
@@ -138,8 +139,7 @@ def get_internal_angles(quad: np.ndarray) -> List[float]:
 def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray, device: str) -> np.ndarray:
     """
     Advanced Smart Ensemble 3.0: 
-    Implements strict projective geometry heuristics and perspective symmetry rules 
-    to prevent physically impossible quadrilateral deformations.
+    Implements strict projective geometry heuristics and perspective symmetry rules.
     """
     all_corners = []
     all_confs = []
@@ -162,7 +162,7 @@ def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray
     
     h, w = raw_image.shape[:2]
     image_area = h * w
-    min_edge_dist = min(h, w) * 0.15  # Increased edge limit to 15%
+    min_edge_dist = min(h, w) * 0.15 
     
     model_indices = range(len(models))
     for indices in itertools.product(model_indices, repeat=4):
@@ -173,7 +173,6 @@ def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray
             all_corners[indices[3]][3]  
         ])
         
-        # 1. Weighted Confidence (Gold model gets a 20% trust boost)
         weighted_conf = 0.0
         for pos_idx, m_idx in enumerate(indices):
             conf = all_confs[m_idx][pos_idx]
@@ -184,7 +183,6 @@ def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray
         
         valid = True
         
-        # 2. Minimum Edge Check
         len_top = np.linalg.norm(quad[0] - quad[1])
         len_right = np.linalg.norm(quad[1] - quad[2])
         len_bottom = np.linalg.norm(quad[2] - quad[3])
@@ -194,35 +192,26 @@ def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray
         if min(edges) < min_edge_dist:
             valid = False
             
-        # 3. Opposite Edge Ratio Check (Max distortion allowed is 2.2x)
         if valid:
             if (len_top / (len_bottom + 1e-5) > 2.2) or (len_bottom / (len_top + 1e-5) > 2.2):
                 valid = False
             if (len_left / (len_right + 1e-5) > 2.2) or (len_right / (len_left + 1e-5) > 2.2):
                 valid = False
             
-        # 4. Internal Angles & Perspective Symmetry Check
         if valid:
             internal_angles = get_internal_angles(quad)
-            
-            # Absolute Limits: No angle should be extremely sharp or flat
             if min(internal_angles) < 55 or max(internal_angles) > 125:
                 valid = False
                 
-            # The Perspective Symmetry Rule
             if valid:
                 for i in range(4):
                     a1, a2 = internal_angles[i], internal_angles[(i+1)%4]
                     a3, a4 = internal_angles[(i+2)%4], internal_angles[(i+3)%4]
-                    
-                    # If two adjacent angles are roughly 90 (between 75 and 105)
                     if abs(a1 - 90) < 15 and abs(a2 - 90) < 15:
-                        # The opposite angles MUST not wildly diverge from each other
                         if abs(a3 - a4) > 25:
                             valid = False
                             break
             
-        # 5. Convexity Check
         if valid:
             cross_products = []
             for i in range(4):
@@ -235,19 +224,15 @@ def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray
             if not np.all(signs == signs[0]) or np.any(signs == 0):
                 valid = False
             
-        # 6. Composite Scoring (Nerfed Area Weight)
         if valid:
             quad_area = polygon_area(quad)
             normalized_area = quad_area / image_area
-            
-            # Confidence is king (85%), Area is a tie-breaker (15%)
             final_score = (0.85 * avg_conf) + (0.15 * normalized_area)
             
             if final_score > best_score:
                 best_score = final_score
                 best_quad = quad
             
-    # Fallback to pure maximum confidence if NO combination survives the geometry filters
     if best_quad is None:
         best_quad = np.zeros((4, 2), dtype=np.float32)
         for i in range(4):
@@ -279,6 +264,44 @@ def draw_corners_on_image(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
         cv2.circle(output, pt1, 8, color, -1)
     return output
 
+# --- GATEKEEPER FUNCTIONS ---
+
+def is_already_cropped(image: np.ndarray, variance_thresh: float = 600.0, white_thresh: int = 200, white_ratio: float = 0.80) -> bool:
+    """
+    Idea A: Statistically determines if an image has already been cropped
+    by analyzing the homogeneity and brightness of its outer borders.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+    h, w = gray.shape
+    
+    border_y = max(1, int(h * 0.02))
+    border_x = max(1, int(w * 0.02))
+    
+    top = gray[:border_y, :]
+    bottom = gray[h-border_y:, :]
+    left = gray[border_y:h-border_y, :border_x]
+    right = gray[border_y:h-border_y, w-border_x:]
+    
+    border_pixels = np.concatenate([top.flatten(), bottom.flatten(), left.flatten(), right.flatten()])
+    
+    variance = np.var(border_pixels)
+    bright_ratio = np.mean(border_pixels > white_thresh)
+    
+    # If the border is highly uniform (low variance) AND overwhelmingly bright,
+    # it is assumed to be an already cropped scan, bypassing corner detection.
+    return bool(variance < variance_thresh and bright_ratio > white_ratio)
+
+def is_already_enhanced(image: np.ndarray, white_thresh: int = 240, mass_threshold: float = 0.40) -> bool:
+    """
+    Idea C: Statistically determines if an image has already been enhanced/scanned
+    by checking the right-tail mass (pure white pixels) of its grayscale histogram.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
+    white_mass_ratio = np.sum(gray > white_thresh) / gray.size
+    
+    # Raw photos rarely have 40% of their pixels at absolute white (>240).
+    return bool(white_mass_ratio > mass_threshold)
+
 class DocumentScanningPipeline:
     def __init__(self, models_registry: Dict[str, torch.nn.Module], device: str = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -287,33 +310,42 @@ class DocumentScanningPipeline:
     def process(self, raw_image: np.ndarray, corner_method: str, enhancement_method: str, apply_binarization: bool, reference_img: Optional[np.ndarray] = None) -> Dict:
         results = {}
         
-        # 1. Corner Detection
-        if corner_method == "ensemble":
-            # Smart Ensemble now uses Gold, Silver, and Bronze medal models
-            models_to_ensemble = [
-                self.models["heatmap_v4_reg"], # 🥇 Gold
-                self.models["heatmap_v3"],     # 🥈 Silver
-                self.models["heatmap_v2"]      # 🥉 Bronze
-            ]
-            corners = detect_corners_ensemble(models_to_ensemble, raw_image, self.device)
-        elif corner_method == "regression":
-            corners, _ = detect_corners_regression(self.models[corner_method], raw_image, device=self.device)
+        # --- 1. Check Idea A: Already Cropped? ---
+        if is_already_cropped(raw_image):
+            h, w = raw_image.shape[:2]
+            corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
+            results['corners_image'] = raw_image.copy() # No need to draw green lines on already clean borders
+            rectified = raw_image.copy() # Preserve original aspect ratio and resolution
         else:
-            corners, _, _ = detect_corners_heatmap(self.models[corner_method], raw_image, self.device)
+            # Standard Corner Detection
+            if corner_method == "ensemble":
+                models_to_ensemble = [
+                    self.models["heatmap_v4_reg"], # 🥇 Gold
+                    self.models["heatmap_v3"],     # 🥈 Silver
+                    self.models["heatmap_v2"]      # 🥉 Bronze
+                ]
+                corners = detect_corners_ensemble(models_to_ensemble, raw_image, self.device)
+            elif corner_method == "regression":
+                corners, _ = detect_corners_regression(self.models[corner_method], raw_image, device=self.device)
+            else:
+                corners, _, _ = detect_corners_heatmap(self.models[corner_method], raw_image, self.device)
+                
+            corners = order_corners(corners)
+            results['corners_image'] = draw_corners_on_image(raw_image, corners)
+            rectified = apply_perspective_transform(raw_image, corners)
+        
+        # --- 2. Check Idea C: Already Enhanced? ---
+        if is_already_enhanced(rectified):
+            enhanced = rectified.copy() # Bypass Enhancement Network to prevent washed-out text
+        else:
+            enhanced = enhance_document(self.models[enhancement_method], rectified, self.device)
             
-        corners = order_corners(corners)
-        results['corners_image'] = draw_corners_on_image(raw_image, corners)
-        
-        # 2. Rectification & Enhancement
-        rectified = apply_perspective_transform(raw_image, corners)
-        enhanced = enhance_document(self.models[enhancement_method], rectified, self.device)
-        
         if apply_binarization:
             enhanced = apply_adaptive_binarization(enhanced)
             
         results['enhanced'] = enhanced
         
-        # 3. Metrics Calculation
+        # --- 3. Metrics Calculation ---
         metrics = {}
         if compute_ocr_metrics:
             raw_ocr = compute_ocr_metrics(rectified)
@@ -326,6 +358,7 @@ class DocumentScanningPipeline:
                 metrics['ocr_target'] = ref_ocr['confidence']
                 
         if reference_img is not None:
+            # Resize reference to match enhanced image's dynamic aspect ratio
             ref_resized = cv2.resize(reference_img, (enhanced.shape[1], enhanced.shape[0]))
             metrics['psnr'] = float(psnr(ref_resized, enhanced))
             metrics['ssim'] = float(ssim(ref_resized, enhanced, channel_axis=2, data_range=255))
