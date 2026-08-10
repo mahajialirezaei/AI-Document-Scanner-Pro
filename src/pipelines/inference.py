@@ -249,10 +249,27 @@ def order_corners(pts: np.ndarray) -> np.ndarray:
     return np.roll(sorted_pts, -np.argmin(sorted_pts.sum(axis=1)), axis=0)
 
 def apply_perspective_transform(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
-    output_size = (1024, 1024)
-    dst = np.array([[0, 0], [1023, 0], [1023, 1023], [0, 1023]], dtype=np.float32)
+    (tl, tr, br, bl) = corners
+
+    widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+    widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+    maxWidth = max(int(widthA), int(widthB))
+
+    heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+    heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+    maxHeight = max(int(heightA), int(heightB))
+
+    dst = np.array([
+        [0, 0],
+        [maxWidth - 1, 0],
+        [maxWidth - 1, maxHeight - 1],
+        [0, maxHeight - 1]
+    ], dtype=np.float32)
+
     H, _ = cv2.findHomography(corners.astype(np.float32), dst)
-    return cv2.warpPerspective(image, H, output_size)
+    warped = cv2.warpPerspective(image, H, (maxWidth, maxHeight))
+
+    return warped
 
 def draw_corners_on_image(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
     output = image.copy()
