@@ -195,8 +195,12 @@ class SyntheticDocumentDataset(Dataset):
         normal_len = np.linalg.norm(vec)
         if normal_len == 0: return result
         
-        normal = np.array([-vec[1], vec[0]]) if is_left else np.array([vec[1], -vec[0]])
-        normal = normal / normal_len
+        normal = np.array([-vec[1], vec[0]]) / normal_len
+        
+        center_doc = np.mean(corners, axis=0)
+        edge_center = (pt1 + pt2) / 2.0
+        if np.dot(normal, edge_center - center_doc) < 0:
+            normal = -normal
         
         page_width = random.uniform(100, 300)
         pt3 = pt2 + normal * page_width
