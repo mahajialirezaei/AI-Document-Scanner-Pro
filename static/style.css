@@ -6,6 +6,12 @@ header { text-align: center; margin-bottom: 2rem; }
 header h1 { color: #2c3e50; font-size: 2.2rem; }
 .subtitle { color: #7f8c8d; font-size: 1.1rem; }
 
+/* Tabs */
+.tabs { display: flex; justify-content: center; gap: 1rem; margin-bottom: 2rem; border-bottom: 2px solid #cbd5e1; padding-bottom: 1rem; }
+.tab-btn { padding: 0.8rem 2rem; border: none; background: transparent; font-size: 1.1rem; font-weight: bold; color: #7f8c8d; cursor: pointer; transition: 0.3s; border-radius: 8px; }
+.tab-btn:hover { background: #e2e8f0; }
+.tab-btn.active { background: #3498db; color: white; }
+
 /* Controls Section */
 .controls-section { display: flex; gap: 1rem; background: white; padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex-wrap: wrap; }
 .control-group { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 0.5rem; }
@@ -29,6 +35,12 @@ input:checked + .slider:before { transform: translateX(22px); }
 .btn-primary { width: 100%; padding: 1rem; background: #3498db; color: white; border: none; border-radius: 8px; font-size: 1.1rem; font-weight: bold; cursor: pointer; transition: 0.3s; }
 .btn-primary:disabled { background: #bdc3c7; cursor: not-allowed; }
 .btn-primary:hover:not(:disabled) { background: #2980b9; }
+
+/* Interactive Canvas */
+.interactive-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
+.canvas-container { background: white; padding: 1rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); text-align: center; }
+canvas { max-width: 100%; border: 1px solid #cbd5e1; border-radius: 4px; cursor: crosshair; }
+.hint { color: #7f8c8d; font-size: 0.9rem; margin-top: 0.5rem; }
 
 /* Metrics Panel */
 .metrics-section { display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }

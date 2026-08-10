@@ -10,10 +10,16 @@
     <div class="container">
         <header>
             <h1>📄 AI Document Scanner Pro</h1>
-            <p class="subtitle">Ensemble Detection, Adaptive Binarization & Live Metrics</p>
+            <p class="subtitle">Ensemble Detection, Interactive Editing & PDF Export</p>
         </header>
 
         <main>
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" id="tabAuto">Auto Mode (Image / PDF)</button>
+                <button class="tab-btn" id="tabInteractive">Interactive Mode (Editor)</button>
+            </div>
+
             <!-- Controls Panel -->
             <section class="controls-section">
                 <div class="control-group">
@@ -50,13 +56,12 @@
                 <div class="upload-grid">
                     <div id="dropzoneRaw" class="dropzone">
                         <div class="dropzone-content">
-                            <p class="dropzone-text">📸 Upload <strong>Raw Photo</strong></p>
-                            <p class="dropzone-hint">(Required)</p>
+                            <p class="dropzone-text">📸 Upload <strong>Raw Photo or PDF</strong></p>
                         </div>
-                        <input type="file" id="fileRaw" accept="image/*" hidden>
+                        <input type="file" id="fileRaw" accept="image/*,application/pdf" hidden>
                     </div>
                     
-                    <div id="dropzoneRef" class="dropzone secondary">
+                    <div id="dropzoneRef" class="dropzone secondary" id="refUploadContainer">
                         <div class="dropzone-content">
                             <p class="dropzone-text">🎯 Upload <strong>GT Clean Scan</strong></p>
                             <p class="dropzone-hint">(Optional: For PSNR/SSIM)</p>
@@ -64,35 +69,55 @@
                         <input type="file" id="fileRef" accept="image/*" hidden>
                     </div>
                 </div>
-                <button id="processBtn" class="btn-primary" disabled>Start Processing</button>
+                
+                <div class="actions">
+                    <button id="processBtn" class="btn-primary" disabled>Start Auto Processing</button>
+                </div>
             </section>
 
             <div id="loading" class="loading hidden">
                 <div class="spinner"></div><p>Executing Neural Networks...</p>
             </div>
 
-            <!-- Metrics Panel -->
-            <section id="metricsPanel" class="metrics-section hidden">
-                <div class="metric-card"><div class="metric-title">PSNR</div><div id="m-psnr" class="metric-val">-</div></div>
-                <div class="metric-card"><div class="metric-title">SSIM</div><div id="m-ssim" class="metric-val">-</div></div>
-                <div class="metric-card"><div class="metric-title">OCR (Degraded)</div><div id="m-ocr-raw" class="metric-val">-</div></div>
-                <div class="metric-card"><div class="metric-title">OCR (Enhanced)</div><div id="m-ocr-enh" class="metric-val highlight">-</div></div>
-                <div class="metric-card"><div class="metric-title">OCR (Target)</div><div id="m-ocr-tgt" class="metric-val">-</div></div>
-            </section>
+            <!-- Auto Mode Results -->
+            <div id="autoView">
+                <section id="metricsPanel" class="metrics-section hidden">
+                    <div class="metric-card"><div class="metric-title">PSNR</div><div id="m-psnr" class="metric-val">-</div></div>
+                    <div class="metric-card"><div class="metric-title">SSIM</div><div id="m-ssim" class="metric-val">-</div></div>
+                    <div class="metric-card"><div class="metric-title">OCR (Degraded)</div><div id="m-ocr-raw" class="metric-val">-</div></div>
+                    <div class="metric-card"><div class="metric-title">OCR (Enhanced)</div><div id="m-ocr-enh" class="metric-val highlight">-</div></div>
+                    <div class="metric-card"><div class="metric-title">OCR (Target)</div><div id="m-ocr-tgt" class="metric-val">-</div></div>
+                </section>
 
-            <!-- Results Section -->
-            <section id="results" class="results-section hidden">
-                <div class="comparison-grid">
-                    <div class="image-card">
-                        <h3>Predicted Corners</h3>
-                        <div class="image-container"><img id="cornersImage"></div>
+                <section id="results" class="results-section hidden">
+                    <div class="comparison-grid">
+                        <div class="image-card">
+                            <h3>Predicted Corners</h3>
+                            <div class="image-container"><img id="cornersImage"></div>
+                        </div>
+                        <div class="image-card">
+                            <h3>Enhanced Result</h3>
+                            <div class="image-container"><img id="enhancedImage"></div>
+                        </div>
                     </div>
-                    <div class="image-card">
+                </section>
+            </div>
+
+            <!-- Interactive Mode Results -->
+            <div id="interactiveView" class="hidden">
+                <div class="interactive-grid">
+                    <div class="canvas-container">
+                        <canvas id="editorCanvas"></canvas>
+                        <p class="hint">Drag the points to adjust corners.</p>
+                        <button id="enhanceCustomBtn" class="btn-primary" style="margin-top: 1rem;">Enhance with these corners</button>
+                    </div>
+                    <div class="image-card hidden" id="interactiveResultCard">
                         <h3>Enhanced Result</h3>
-                        <div class="image-container"><img id="enhancedImage"></div>
+                        <div class="image-container"><img id="interactiveEnhancedImage"></div>
                     </div>
                 </div>
-            </section>
+            </div>
+
             <div id="error" class="error-message hidden"></div>
         </main>
     </div>
