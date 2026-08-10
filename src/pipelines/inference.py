@@ -5,6 +5,7 @@ Inference pipelines for document scanning and enhancement.
 import cv2
 import numpy as np
 import torch
+import itertools
 from typing import Dict, Tuple, Optional, List, Union
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
@@ -114,19 +115,146 @@ def detect_corners_heatmap(model: torch.nn.Module, raw_image: np.ndarray, device
     corners[:, 1] *= metadata['original_shape'][0]
     return corners, confidences, heatmaps_np
 
+def polygon_area(corners: np.ndarray) -> float:
+    """Calculates the area of a polygon using the Shoelace formula."""
+    x = corners[:, 0]
+    y = corners[:, 1]
+    return 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+
+def get_internal_angles(quad: np.ndarray) -> List[float]:
+    """Calculates the 4 internal angles of a quadrilateral in degrees."""
+    angles = []
+    for i in range(4):
+        p1 = quad[(i-1)%4]
+        p2 = quad[i]
+        p3 = quad[(i+1)%4]
+        v1 = p1 - p2
+        v2 = p3 - p2
+        cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-8)
+        angle = np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+        angles.append(angle)
+    return angles
+
 def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray, device: str) -> np.ndarray:
-    """Smart Ensemble: Takes max confidence per individual corner across multiple models."""
-    best_corners = np.zeros((4, 2), dtype=np.float32)
-    best_confs = [-1.0] * 4
+    """
+    Advanced Smart Ensemble 3.0: 
+    Implements strict projective geometry heuristics and perspective symmetry rules 
+    to prevent physically impossible quadrilateral deformations.
+    """
+    all_corners = []
+    all_confs = []
     
     for model in models:
         corners, confs, _ = detect_corners_heatmap(model, raw_image, device)
-        for i in range(4):
-            if confs[i] > best_confs[i]:
-                best_confs[i] = confs[i]
-                best_corners[i] = corners[i]
+        
+        centroid = np.mean(corners, axis=0)
+        angles = np.arctan2(corners[:, 1] - centroid[1], corners[:, 0] - centroid[0])
+        sorted_idx = np.argsort(angles)
+        
+        tl_idx = np.argmin(corners[sorted_idx].sum(axis=1))
+        final_idx = np.roll(sorted_idx, -tl_idx)
+        
+        all_corners.append(corners[final_idx])
+        all_confs.append(np.array(confs)[final_idx])
+        
+    best_score = -float('inf')
+    best_quad = None
+    
+    h, w = raw_image.shape[:2]
+    image_area = h * w
+    min_edge_dist = min(h, w) * 0.15  # Increased edge limit to 15%
+    
+    model_indices = range(len(models))
+    for indices in itertools.product(model_indices, repeat=4):
+        quad = np.array([
+            all_corners[indices[0]][0], 
+            all_corners[indices[1]][1], 
+            all_corners[indices[2]][2], 
+            all_corners[indices[3]][3]  
+        ])
+        
+        # 1. Weighted Confidence (Gold model gets a 20% trust boost)
+        weighted_conf = 0.0
+        for pos_idx, m_idx in enumerate(indices):
+            conf = all_confs[m_idx][pos_idx]
+            if m_idx == 0:  
+                conf *= 1.2 
+            weighted_conf += conf
+        avg_conf = weighted_conf / 4.0
+        
+        valid = True
+        
+        # 2. Minimum Edge Check
+        len_top = np.linalg.norm(quad[0] - quad[1])
+        len_right = np.linalg.norm(quad[1] - quad[2])
+        len_bottom = np.linalg.norm(quad[2] - quad[3])
+        len_left = np.linalg.norm(quad[3] - quad[0])
+        
+        edges = [len_top, len_right, len_bottom, len_left]
+        if min(edges) < min_edge_dist:
+            valid = False
+            
+        # 3. Opposite Edge Ratio Check (Max distortion allowed is 2.2x)
+        if valid:
+            if (len_top / (len_bottom + 1e-5) > 2.2) or (len_bottom / (len_top + 1e-5) > 2.2):
+                valid = False
+            if (len_left / (len_right + 1e-5) > 2.2) or (len_right / (len_left + 1e-5) > 2.2):
+                valid = False
+            
+        # 4. Internal Angles & Perspective Symmetry Check
+        if valid:
+            internal_angles = get_internal_angles(quad)
+            
+            # Absolute Limits: No angle should be extremely sharp or flat
+            if min(internal_angles) < 55 or max(internal_angles) > 125:
+                valid = False
                 
-    return best_corners
+            # The Perspective Symmetry Rule
+            if valid:
+                for i in range(4):
+                    a1, a2 = internal_angles[i], internal_angles[(i+1)%4]
+                    a3, a4 = internal_angles[(i+2)%4], internal_angles[(i+3)%4]
+                    
+                    # If two adjacent angles are roughly 90 (between 75 and 105)
+                    if abs(a1 - 90) < 15 and abs(a2 - 90) < 15:
+                        # The opposite angles MUST not wildly diverge from each other
+                        if abs(a3 - a4) > 25:
+                            valid = False
+                            break
+            
+        # 5. Convexity Check
+        if valid:
+            cross_products = []
+            for i in range(4):
+                p0, p1, p2 = quad[i], quad[(i+1)%4], quad[(i+2)%4]
+                v1 = p1 - p0
+                v2 = p2 - p1
+                cross_products.append(v1[0]*v2[1] - v1[1]*v2[0])
+                
+            signs = np.sign(cross_products)
+            if not np.all(signs == signs[0]) or np.any(signs == 0):
+                valid = False
+            
+        # 6. Composite Scoring (Nerfed Area Weight)
+        if valid:
+            quad_area = polygon_area(quad)
+            normalized_area = quad_area / image_area
+            
+            # Confidence is king (85%), Area is a tie-breaker (15%)
+            final_score = (0.85 * avg_conf) + (0.15 * normalized_area)
+            
+            if final_score > best_score:
+                best_score = final_score
+                best_quad = quad
+            
+    # Fallback to pure maximum confidence if NO combination survives the geometry filters
+    if best_quad is None:
+        best_quad = np.zeros((4, 2), dtype=np.float32)
+        for i in range(4):
+            max_model_idx = np.argmax([all_confs[m][i] for m in range(len(models))])
+            best_quad[i] = all_corners[max_model_idx][i]
+            
+    return best_quad
 
 def order_corners(pts: np.ndarray) -> np.ndarray:
     if len(pts) != 4: return pts
@@ -161,7 +289,12 @@ class DocumentScanningPipeline:
         
         # 1. Corner Detection
         if corner_method == "ensemble":
-            models_to_ensemble = [self.models["heatmap_v2"], self.models["heatmap_v3"]]
+            # Smart Ensemble now uses Gold, Silver, and Bronze medal models
+            models_to_ensemble = [
+                self.models["heatmap_v4_reg"], # 🥇 Gold
+                self.models["heatmap_v3"],     # 🥈 Silver
+                self.models["heatmap_v2"]      # 🥉 Bronze
+            ]
             corners = detect_corners_ensemble(models_to_ensemble, raw_image, self.device)
         elif corner_method == "regression":
             corners, _ = detect_corners_regression(self.models[corner_method], raw_image, device=self.device)
