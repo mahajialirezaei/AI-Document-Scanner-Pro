@@ -9,7 +9,12 @@ from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response
-from src.pipelines.inference import DocumentScanningPipeline, load_model, apply_perspective_transform, enhance_document, apply_adaptive_binarization
+
+from src.pipelines.inference import (
+    DocumentScanningPipeline, load_model, apply_perspective_transform, 
+    enhance_document, apply_adaptive_binarization, is_already_cropped, 
+    is_already_enhanced, detect_corners_ensemble, detect_corners_heatmap, order_corners
+)
 
 app = FastAPI(title="Document Scanner & Enhancer API")
 pipeline = None
@@ -55,7 +60,6 @@ async def scan_document(
         file_bytes = await file.read()
         do_binarization = apply_binarization.lower() == 'true'
 
-        # Handle PDF Upload
         if file.content_type == "application/pdf":
             doc = fitz.open(stream=file_bytes, filetype="pdf")
             out_pdf = fitz.open()
@@ -81,7 +85,6 @@ async def scan_document(
             pdf_out_bytes = out_pdf.write()
             return Response(content=pdf_out_bytes, media_type="application/pdf", headers={"Content-Disposition": "attachment; filename=enhanced_scan.pdf"})
 
-        # Handle Image Upload
         raw_image = cv2.imdecode(np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR)
         ref_image = None
         if reference_file:
@@ -113,19 +116,18 @@ async def interactive_detect(
         raw_bytes = await file.read()
         raw_image = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
         
-        # We only need the corners
+        if is_already_cropped(raw_image):
+            corners_normalized = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+            return JSONResponse(content={"corners": corners_normalized})
+        
         if corner_method == "ensemble":
             models_to_ensemble = [models_registry["heatmap_v4_reg"], models_registry["heatmap_v3"], models_registry["heatmap_v2"]]
-            from src.pipelines.inference import detect_corners_ensemble
             corners = detect_corners_ensemble(models_to_ensemble, raw_image, device)
         else:
-            from src.pipelines.inference import detect_corners_heatmap
             corners, _, _ = detect_corners_heatmap(models_registry[corner_method], raw_image, device)
             
-        from src.pipelines.inference import order_corners
         corners = order_corners(corners)
         
-        # Normalize corners to [0, 1] for the UI canvas
         h, w = raw_image.shape[:2]
         corners_normalized = corners.copy()
         corners_normalized[:, 0] /= w
@@ -146,7 +148,6 @@ async def interactive_enhance(
         raw_bytes = await file.read()
         raw_image = cv2.imdecode(np.frombuffer(raw_bytes, np.uint8), cv2.IMREAD_COLOR)
         
-        # Parse corners from JSON and scale to intrinsic image dimensions
         corners_norm = np.array(json.loads(corners), dtype=np.float32)
         h, w = raw_image.shape[:2]
         corners_px = corners_norm.copy()
@@ -156,7 +157,11 @@ async def interactive_enhance(
         do_binarization = apply_binarization.lower() == 'true'
         
         rectified = apply_perspective_transform(raw_image, corners_px)
-        enhanced = enhance_document(models_registry[enhancement_method], rectified, device)
+        
+        if is_already_enhanced(rectified):
+            enhanced = rectified.copy()
+        else:
+            enhanced = enhance_document(models_registry[enhancement_method], rectified, device)
         
         if do_binarization:
             enhanced = apply_adaptive_binarization(enhanced)
