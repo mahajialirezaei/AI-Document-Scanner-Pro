@@ -4,13 +4,10 @@ Phase 6: End-to-End Joint Training Pipeline
 This module implements joint fine-tuning of Enhancement U-Net and Corner Detection models
 using a sequential, differentiable pipeline where corner detector output is used to 
 rectify the image during training, and error flows backward from Enhancement to Corner network.
-
-Features:
-- Sequential forward pass: corner detection -> perspective transform -> enhancement
-- Differentiable warping using kornia
-- Fine-tuning with enhancement loss only (backpropagated through entire chain)
 """
 
+import os
+import cv2
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -18,6 +15,8 @@ from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Tuple
 import logging
 from pathlib import Path
+
+cv2.setNumThreads(0)
 
 try:
     import kornia
@@ -27,32 +26,21 @@ except ImportError:
     KORNIA_AVAILABLE = False
     print("Warning: kornia not installed. Install with: pip install kornia")
 
-from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
+from src.models.model import EnhancementUNet, CornerHeatmapModel
 from src.training.losses import EnhancementLoss
+from src.data.data_splitter import get_synthetic_splits
 
 logger = logging.getLogger(__name__)
 
 
 class SequentialE2ETrainer:
-    """
-    Trains corner detector and enhancement network in a sequential differentiable chain.
-    
-    Forward pass:
-    1. Raw image -> Corner Detector -> predicted corners
-    2. Predicted corners + target flat corners -> Homography
-    3. Raw image + Homography -> warp_perspective -> rectified crop
-    4. Rectified crop -> Enhancement Network -> enhanced output
-    5. Enhanced output vs clean target -> loss
-    6. Backpropagate through entire chain to update both networks
-    """
-    
     def __init__(
         self,
-        enhancement_model: EnhancementUNet,
+        enhancement_model: nn.Module,
         corner_model: nn.Module,
         device: torch.device,
-        image_size: Tuple[int, int] = (256, 256),
-        lr: float = 1e-4
+        image_size: Tuple[int, int] = (512, 512),
+        lr: float = 1e-5
     ):
         if not KORNIA_AVAILABLE:
             raise ImportError("kornia is required for SequentialE2ETrainer. Install with: pip install kornia")
@@ -62,191 +50,126 @@ class SequentialE2ETrainer:
         self.device = device
         self.image_size = image_size
         
-        # Target flat rectangle corners (normalized to [0, 1])
+        # Target flat rectangle corners
         h, w = image_size
         self.register_buffer('flat_corners', torch.tensor([
             [[0.0, 0.0], [w - 1, 0.0], [w - 1, h - 1], [0.0, h - 1]]], dtype=torch.float32).to(device))
         
-        # Single enhancement loss for the entire chain
-        self.criterion = EnhancementLoss(l1_weight=1.0, edge_weight=0.1).to(device)
+        self.criterion = EnhancementLoss(l1_weight=1.0, edge_weight=2.0).to(device)
         
-        # Single optimizer for both models
         self.optimizer = optim.Adam(
             list(self.enhancement_model.parameters()) + list(self.corner_model.parameters()),
             lr=lr
         )
         
+        # FIX 2: Initialize Mixed Precision Scaler to prevent CUDA Out of Memory (OOM)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
+        
         logger.info(f"SequentialE2ETrainer initialized - Image size: {image_size}, LR: {lr}")
     
     def _corners_to_homography(self, pred_corners: torch.Tensor) -> torch.Tensor:
-        """
-        Convert predicted corners to homography matrix.
-        
-        Args:
-            pred_corners: (B, 8) or (B, 4, 2) tensor of predicted corner coordinates
-                         (assumed normalized to [0, 1])
-        
-        Returns:
-            H: (B, 3, 3) homography matrices
-        """
         B = pred_corners.shape[0]
-        
-        # Reshape to (B, 4, 2) if needed
         if pred_corners.dim() == 2:
             pred_corners = pred_corners.view(B, 4, 2)
         
-        # Denormalize from [0, 1] to pixel coordinates
         h, w = self.image_size
         pred_corners_denorm = pred_corners.clone()
         pred_corners_denorm[:, :, 0] *= (w - 1)
         pred_corners_denorm[:, :, 1] *= (h - 1)
         
-        # Expand flat_corners to batch size
         flat_corners_batch = self.flat_corners.expand(B, -1, -1)
-        
-        # Compute homography from predicted corners to flat rectangle
         H = get_perspective_transform(pred_corners_denorm, flat_corners_batch)
-        
         return H
     
-    def train_step_joint(
-        self,
-        images: torch.Tensor,
-        enhancement_targets: torch.Tensor
-    ) -> Dict[str, float]:
-        """
-        Perform one joint training step with sequential forward pass.
-        
-        Args:
-            images: Raw document photos (B, C, H, W)
-            enhancement_targets: Clean target images (B, C, H, W)
-        
-        Returns:
-            Loss dictionary
-        """
+    def train_step_joint(self, images: torch.Tensor, enhancement_targets: torch.Tensor) -> Dict[str, float]:
         self.enhancement_model.train()
         self.corner_model.train()
         
-        images = images.to(self.device)
-        enhancement_targets = enhancement_targets.to(self.device)
+        images = images.to(self.device, non_blocking=True)
+        enhancement_targets = enhancement_targets.to(self.device, non_blocking=True)
         
-        # Step 1: Predict corners from raw image
-        corner_output = self.corner_model(images)
+        self.optimizer.zero_grad(set_to_none=True)
         
-        # Handle both regression (B, 8) and heatmap (tuple) outputs
-        if isinstance(corner_output, tuple):
-            pred_corners, _ = corner_output
-        else:
-            pred_corners = corner_output
+        # Execute forward pass with Automatic Mixed Precision (AMP)
+        with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
+            corner_output = self.corner_model(images)
+            pred_corners = corner_output[0] if isinstance(corner_output, tuple) else corner_output
+            
+            H = self._corners_to_homography(pred_corners)
+            
+            h, w = self.image_size
+            rectified_crop = warp_perspective(images, H, (h, w))
+            
+            enhanced_output = self.enhancement_model(rectified_crop)
+            loss = self.criterion(enhanced_output, enhancement_targets)
         
-        # Step 2: Compute homography from predicted corners to flat rectangle
-        H = self._corners_to_homography(pred_corners)
-        
-        # Step 3: Warp raw image using predicted homography (differentiable)
-        h, w = self.image_size
-        rectified_crop = warp_perspective(images, H, (h, w))
-        
-        # Step 4: Pass rectified crop through enhancement network
-        enhanced_output = self.enhancement_model(rectified_crop)
-        
-        # Step 5: Compute enhancement loss (compare enhanced output to clean target)
-        loss = self.criterion(enhanced_output, enhancement_targets)
-        
-        # Step 6: Backpropagate through entire chain
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        # Backpropagate through entire chain using AMP Scaler
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
+        torch.nn.utils.clip_grad_norm_(list(self.enhancement_model.parameters()) + list(self.corner_model.parameters()), max_norm=1.0)
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         
         return {'total_loss': loss.item(), 'enhancement_loss': loss.item()}
 
 
 def train_e2e_pipeline(
     dataloader: DataLoader,
-    enhancement_model: EnhancementUNet,
+    enhancement_model: nn.Module,
     corner_model: nn.Module,
     device: torch.device,
-    epochs: int = 50,
-    image_size: Tuple[int, int] = (256, 256),
-    lr: float = 1e-4,
+    epochs: int = 15,
+    image_size: Tuple[int, int] = (512, 512),
+    lr: float = 1e-5,
     checkpoint_dir: Optional[Path] = None
 ) -> Dict[str, List[float]]:
-    """
-    End-to-end training pipeline with sequential differentiable chain.
     
-    Args:
-        dataloader: Dataset with raw photos and clean targets
-        enhancement_model: U-Net for document enhancement
-        corner_model: Model for corner detection
-        device: CUDA/CPU device
-        epochs: Number of training epochs
-        image_size: Target image size for warping
-        lr: Learning rate
-        checkpoint_dir: Directory to save checkpoints
-    
-    Returns:
-        Training history dictionary
-    """
-    trainer = SequentialE2ETrainer(
-        enhancement_model,
-        corner_model,
-        device,
-        image_size=image_size,
-        lr=lr
-    )
-    
-    history = {
-        'total_loss': [],
-        'enhancement_loss': []
-    }
+    trainer = SequentialE2ETrainer(enhancement_model, corner_model, device, image_size=image_size, lr=lr)
+    history = {'total_loss': []}
     
     for epoch in range(epochs):
         epoch_total_loss = 0.0
         num_batches = 0
         
         for batch_idx, batch in enumerate(dataloader):
-            # Extract data from batch
             images = batch['raw_photo'] if isinstance(batch, dict) else batch[0]
             targets = batch['clean_target'] if isinstance(batch, dict) else batch[1]
             
             losses = trainer.train_step_joint(images, targets)
-            
             epoch_total_loss += losses.get('total_loss', 0.0)
             num_batches += 1
             
             if batch_idx % 20 == 0:
-                logger.info(f"Epoch {epoch+1}/{epochs}, Batch {batch_idx}: "
-                           f"Loss = {losses.get('total_loss', 0.0):.4f}")
+                logger.info(f"Epoch {epoch+1}/{epochs}, Batch {batch_idx}: Loss = {losses.get('total_loss', 0.0):.4f}")
         
-        # Average losses for epoch
         avg_total_loss = epoch_total_loss / num_batches
-        
         history['total_loss'].append(avg_total_loss)
-        history['enhancement_loss'].append(avg_total_loss)
-        
         logger.info(f"Epoch {epoch+1}/{epochs} completed - Avg Loss: {avg_total_loss:.4f}")
         
-        # Save checkpoint every 10 epochs
-        if checkpoint_dir and (epoch + 1) % 10 == 0:
+        if checkpoint_dir and (epoch + 1) % 5 == 0:
             checkpoint_path = checkpoint_dir / f'e2e_checkpoint_epoch{epoch+1}.pth'
             torch.save({
                 'epoch': epoch,
                 'enhancement_model_state_dict': enhancement_model.state_dict(),
                 'corner_model_state_dict': corner_model.state_dict(),
-                'history': history
+                'val_loss': avg_total_loss, # dummy val_loss to maintain compatibility
             }, checkpoint_path)
             logger.info(f"Checkpoint saved to {checkpoint_path}")
-    
+            
+    # Save the final best model format at the end
+    if checkpoint_dir:
+        final_path = checkpoint_dir / 'best_model.pth'
+        torch.save({
+            'epoch': epochs,
+            'enhancement_model_state_dict': enhancement_model.state_dict(),
+            'corner_model_state_dict': corner_model.state_dict(),
+        }, final_path)
+        
     return history
 
 
 if __name__ == '__main__':
     import argparse
-    import sys
-    import os
-    
-    from src.models.model import EnhancementUNet, CornerHeatmapModel
-    from src.data.data_splitter import get_synthetic_splits
-    
     logging.basicConfig(level=logging.INFO)
     
     parser = argparse.ArgumentParser(description="End-to-End Joint Fine-tuning (Bonus Phase)")
@@ -269,12 +192,12 @@ if __name__ == '__main__':
 
     # 1. Load Dataset
     logger.info("Preparing Synthetic Dataset Splits...")
-    train_ds, val_ds, _ = get_synthetic_splits(
+    train_ds, _, _ = get_synthetic_splits(
         clean_scans_dir=args.clean_scans,
         backgrounds_dir=args.backgrounds,
         image_size=(args.image_size, args.image_size),
         seed=42,
-        num_eval_samples=50,
+        num_eval_samples=10, # Keep tiny to save RAM
         train_samples_per_epoch=1000  # Smaller epoch for fine-tuning
     )
     
