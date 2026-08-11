@@ -25,7 +25,8 @@
                 <div class="control-group">
                     <label>🎯 Corner Detection Model</label>
                     <select id="cornerMethod">
-                        <option value="ensemble">Smart Ensemble (Gold + Silver + Bronze) 🏆</option>
+                        <option value="ensemble">Smart Ensemble (E2E + Gold + Silver) 🏆</option>
+                        <option value="heatmap_e2e">Heatmap E2E Finetuned 💎</option>
                         <option value="heatmap_v4_reg">Heatmap Regularized v4 (Gold) 🥇</option>
                         <option value="heatmap_v3">Heatmap Clean v3 (Silver) 🥈</option>
                         <option value="heatmap_v2">Heatmap Clean v2 (Bronze) 🥉</option>
@@ -36,6 +37,7 @@
                 <div class="control-group">
                     <label>✨ Enhancement Model</label>
                     <select id="enhancementMethod">
+                        <option value="enh_e2e">Enhancement E2E Finetuned 💎</option>
                         <option value="enh_regularized_v2">Regularized v2 (Gold: Best Readability) 🥇</option>
                         <option value="enh_clean_v2">Clean v2 (Silver: Best Fidelity) 🥈</option>
                         <option value="enh_baseline">Legacy Baseline v1 (Bronze) 🥉</option>
