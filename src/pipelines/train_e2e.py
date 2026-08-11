@@ -50,10 +50,10 @@ class SequentialE2ETrainer:
         self.device = device
         self.image_size = image_size
         
-        # Target flat rectangle corners
         h, w = image_size
-        self.register_buffer('flat_corners', torch.tensor([
-            [[0.0, 0.0], [w - 1, 0.0], [w - 1, h - 1], [0.0, h - 1]]], dtype=torch.float32).to(device))
+        self.flat_corners = torch.tensor([
+            [[0.0, 0.0], [w - 1, 0.0], [w - 1, h - 1], [0.0, h - 1]]
+        ], dtype=torch.float32, device=self.device)
         
         self.criterion = EnhancementLoss(l1_weight=1.0, edge_weight=2.0).to(device)
         
@@ -62,7 +62,6 @@ class SequentialE2ETrainer:
             lr=lr
         )
         
-        # FIX 2: Initialize Mixed Precision Scaler to prevent CUDA Out of Memory (OOM)
         self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
         
         logger.info(f"SequentialE2ETrainer initialized - Image size: {image_size}, LR: {lr}")
@@ -197,8 +196,8 @@ if __name__ == '__main__':
         backgrounds_dir=args.backgrounds,
         image_size=(args.image_size, args.image_size),
         seed=42,
-        num_eval_samples=10, # Keep tiny to save RAM
-        train_samples_per_epoch=1000  # Smaller epoch for fine-tuning
+        num_eval_samples=10, 
+        train_samples_per_epoch=1000
     )
     
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
