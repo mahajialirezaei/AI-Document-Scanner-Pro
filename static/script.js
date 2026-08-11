@@ -81,6 +81,7 @@ document.addEventListener('DOMContentLoaded', function() {
             if(refFile) formData.append('reference_file', refFile);
             formData.append('enhancement_method', document.getElementById('enhancementMethod').value);
             formData.append('apply_binarization', document.getElementById('applyBinarization').checked);
+            formData.append('apply_ink_boost', document.getElementById('applyInkBoost').checked);
 
             fetch('/scan', { method: 'POST', body: formData })
             .then(res => {
@@ -171,7 +172,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-canvas.addEventListener('mousedown', (e) => {
+    canvas.addEventListener('mousedown', (e) => {
         const rect = canvas.getBoundingClientRect();
         
         const scaleX = canvas.width / rect.width;
@@ -216,6 +217,7 @@ canvas.addEventListener('mousedown', (e) => {
         formData.append('corners', JSON.stringify(cornersNorm));
         formData.append('enhancement_method', document.getElementById('enhancementMethod').value);
         formData.append('apply_binarization', document.getElementById('applyBinarization').checked);
+        formData.append('apply_ink_boost', document.getElementById('applyInkBoost').checked);
 
         fetch('/interactive-enhance', { method: 'POST', body: formData })
         .then(res => res.json().then(data => res.ok ? data : Promise.reject(data)))
