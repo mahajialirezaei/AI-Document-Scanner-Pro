@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import json
 import fitz
+import os
 from io import BytesIO
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -35,6 +36,13 @@ async def startup_event():
             "enh_baseline": load_model("enhancement", "checkpoints/enhancement_clean_nodropout/best_model.pth", device),
             "regression": load_model("corner_regression", "checkpoints/corner_regression_clean_nodropout/best_model.pth", device)
         }
+        
+        e2e_path = "checkpoints/e2e_finetuned/best_model.pth"
+        if os.path.exists(e2e_path):
+            models_registry["heatmap_e2e"] = load_model("corner_heatmap", e2e_path, device, dropout_rate=0.3)
+            models_registry["enh_e2e"] = load_model("enhancement", e2e_path, device, dropout_rate=0.3)
+            print("Loaded E2E Finetuned checkpoints.")
+            
         pipeline = DocumentScanningPipeline(models_registry, device)
         print("Pipeline & Models initialized successfully.")
     except Exception as e:
@@ -51,7 +59,7 @@ async def scan_document(
     file: UploadFile = File(...),
     reference_file: UploadFile = File(None),
     corner_method: str = Form("ensemble"),
-    enhancement_method: str = Form("enh_regularized_v2"),
+    enhancement_method: str = Form("enh_e2e"),
     apply_binarization: str = Form("false"),
     apply_ink_boost: str = Form("false")
 ):
@@ -138,7 +146,12 @@ async def interactive_detect(
             return JSONResponse(content={"corners": corners_normalized})
         
         if corner_method == "ensemble":
-            models_to_ensemble = [models_registry["heatmap_v4_reg"], models_registry["heatmap_v3"], models_registry["heatmap_v2"]]
+            models_to_ensemble = [
+                models_registry.get("heatmap_e2e", models_registry["heatmap_v4_reg"]), 
+                models_registry["heatmap_v4_reg"], 
+                models_registry["heatmap_v3"], 
+                models_registry["heatmap_v2"]
+            ]
             corners = detect_corners_ensemble(models_to_ensemble, raw_image, device)
         else:
             corners, _, _ = detect_corners_heatmap(models_registry[corner_method], raw_image, device)
@@ -158,7 +171,7 @@ async def interactive_detect(
 async def interactive_enhance(
     file: UploadFile = File(...),
     corners: str = Form(...),
-    enhancement_method: str = Form("enh_regularized_v2"),
+    enhancement_method: str = Form("enh_e2e"),
     apply_binarization: str = Form("false"),
     apply_ink_boost: str = Form("false")
 ):
