@@ -1,6 +1,7 @@
 """
 Inference pipelines for document scanning and enhancement.
-Includes Smart Ensemble geometry constraints and statistical bypass logic (Gatekeepers).
+Includes Smart Ensemble geometry constraints, statistical bypass logic (Gatekeepers),
+and optional post-processing filters (Binarization & Ink Boost).
 """
 
 import cv2
@@ -73,6 +74,26 @@ def apply_adaptive_binarization(image: np.ndarray) -> np.ndarray:
     blurred = cv2.medianBlur(gray, 3)
     binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 15)
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+def apply_ink_boost(image: np.ndarray, gamma: float = 0.82, sharpness: float = 1.35) -> np.ndarray:
+    """
+    Post-processing filter: Enhances ink density and crispness without hard thresholding.
+    Uses Luminance Gamma correction in YCrCb color space + Unsharp Masking.
+    """
+    ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+    y, cr, cb = cv2.split(ycrcb)
+    
+    inv_gamma = 1.0 / gamma
+    table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)]).astype("uint8")
+    y_enhanced = cv2.LUT(y, table)
+    
+    enhanced_ycrcb = cv2.merge([y_enhanced, cr, cb])
+    boosted = cv2.cvtColor(enhanced_ycrcb, cv2.COLOR_YCrCb2BGR)
+    
+    blurred = cv2.GaussianBlur(boosted, (0, 0), 1.5)
+    sharpened = cv2.addWeighted(boosted, sharpness, blurred, -(sharpness - 1.0), 0)
+    
+    return sharpened
 
 def detect_corners_regression(model: torch.nn.Module, raw_image: np.ndarray, device: str = None) -> Tuple[np.ndarray, float]:
     if device is None:
@@ -283,30 +304,35 @@ def draw_corners_on_image(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
 
 # --- GATEKEEPER FUNCTIONS ---
 
-def is_already_cropped(image: np.ndarray, variance_thresh: float = 600.0, white_thresh: int = 200, white_ratio: float = 0.80) -> bool:
+def is_already_cropped(image: np.ndarray, variance_thresh: float = 800.0, white_thresh: int = 180, white_ratio: float = 0.70) -> bool:
     """
-    Idea A: Statistically determines if an image has already been cropped
-    by analyzing the homogeneity and brightness of its outer borders.
+    Idea A (V2): Statistically determines if an image has already been cropped
+    by analyzing the homogeneity and brightness of its outer borders independently.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
     h, w = gray.shape
     
-    border_y = max(1, int(h * 0.02))
-    border_x = max(1, int(w * 0.02))
+    border_y = max(1, int(h * 0.03))
+    border_x = max(1, int(w * 0.03))
     
-    top = gray[:border_y, :]
-    bottom = gray[h-border_y:, :]
-    left = gray[border_y:h-border_y, :border_x]
-    right = gray[border_y:h-border_y, w-border_x:]
+    edges = {
+        "top": gray[:border_y, :],
+        "bottom": gray[h-border_y:, :],
+        "left": gray[border_y:h-border_y, :border_x],
+        "right": gray[border_y:h-border_y, w-border_x:]
+    }
     
-    border_pixels = np.concatenate([top.flatten(), bottom.flatten(), left.flatten(), right.flatten()])
+    valid_edges = 0
     
-    variance = np.var(border_pixels)
-    bright_ratio = np.mean(border_pixels > white_thresh)
-    
-    # If the border is highly uniform (low variance) AND overwhelmingly bright,
-    # it is assumed to be an already cropped scan, bypassing corner detection.
-    return bool(variance < variance_thresh and bright_ratio > white_ratio)
+    for name, edge_pixels in edges.items():
+        pixels = edge_pixels.flatten()
+        variance = np.var(pixels)
+        bright_ratio = np.mean(pixels > white_thresh)
+        
+        if variance < variance_thresh and bright_ratio > white_ratio:
+            valid_edges += 1
+            
+    return bool(valid_edges >= 3)
 
 def is_already_enhanced(image: np.ndarray, white_thresh: int = 240, mass_threshold: float = 0.40) -> bool:
     """
@@ -316,7 +342,6 @@ def is_already_enhanced(image: np.ndarray, white_thresh: int = 240, mass_thresho
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
     white_mass_ratio = np.sum(gray > white_thresh) / gray.size
     
-    # Raw photos rarely have 40% of their pixels at absolute white (>240).
     return bool(white_mass_ratio > mass_threshold)
 
 class DocumentScanningPipeline:
@@ -324,17 +349,24 @@ class DocumentScanningPipeline:
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.models = models_registry
         
-    def process(self, raw_image: np.ndarray, corner_method: str, enhancement_method: str, apply_binarization: bool, reference_img: Optional[np.ndarray] = None) -> Dict:
+    def process(
+        self, 
+        raw_image: np.ndarray, 
+        corner_method: str, 
+        enhancement_method: str, 
+        apply_binarization: bool, 
+        apply_ink_boost: bool = False,
+        reference_img: Optional[np.ndarray] = None
+    ) -> Dict:
         results = {}
         
         # --- 1. Check Idea A: Already Cropped? ---
         if is_already_cropped(raw_image):
             h, w = raw_image.shape[:2]
             corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
-            results['corners_image'] = raw_image.copy() # No need to draw green lines on already clean borders
-            rectified = raw_image.copy() # Preserve original aspect ratio and resolution
+            results['corners_image'] = raw_image.copy()
+            rectified = raw_image.copy()
         else:
-            # Standard Corner Detection
             if corner_method == "ensemble":
                 models_to_ensemble = [
                     self.models["heatmap_v4_reg"], # 🥇 Gold
@@ -353,16 +385,20 @@ class DocumentScanningPipeline:
         
         # --- 2. Check Idea C: Already Enhanced? ---
         if is_already_enhanced(rectified):
-            enhanced = rectified.copy() # Bypass Enhancement Network to prevent washed-out text
+            enhanced = rectified.copy()
         else:
             enhanced = enhance_document(self.models[enhancement_method], rectified, self.device)
+            
+        # --- 3. Optional Post-Processing Filters ---
+        if apply_ink_boost:
+            enhanced = apply_ink_boost(enhanced)
             
         if apply_binarization:
             enhanced = apply_adaptive_binarization(enhanced)
             
         results['enhanced'] = enhanced
         
-        # --- 3. Metrics Calculation ---
+        # --- 4. Metrics Calculation ---
         metrics = {}
         if compute_ocr_metrics:
             raw_ocr = compute_ocr_metrics(rectified)
@@ -375,7 +411,6 @@ class DocumentScanningPipeline:
                 metrics['ocr_target'] = ref_ocr['confidence']
                 
         if reference_img is not None:
-            # Resize reference to match enhanced image's dynamic aspect ratio
             ref_resized = cv2.resize(reference_img, (enhanced.shape[1], enhanced.shape[0]))
             metrics['psnr'] = float(psnr(ref_resized, enhanced))
             metrics['ssim'] = float(ssim(ref_resized, enhanced, channel_axis=2, data_range=255))
