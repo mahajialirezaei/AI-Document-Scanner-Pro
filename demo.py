@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Demo script for CNN Document Scanning & Enhancement System.
 
@@ -6,16 +5,15 @@ This script provides an easy-to-use interface for running the complete
 document scanning pipeline on single images or batches.
 
 Usage:
-    python demo.py -i input.jpg -o output/ --visualize
-    python demo.py -i images/ -o results/ --batch
-    python demo.py --help
+    python demo.py -i input.jpg -o output/ --enhancement-model path/to/enh.pth --corner-model path/to/corner.pth --corner-approach heatmap --visualize
+    python demo.py -i images/ -o results/ --enhancement-model path/to/enh.pth --corner-model path/to/corner.pth --batch
 """
 
 import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Tuple, List
 
 import numpy as np
 import cv2
@@ -28,16 +26,13 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from src.pipelines.inference import (
     load_model,
-    preprocess_image,
     detect_corners_regression,
     detect_corners_heatmap,
     enhance_document,
     order_corners,
     apply_perspective_transform,
     draw_corners_on_image,
-    DocumentScanningPipeline,
 )
-from src.models.model import EnhancementUNet, CornerRegressionModel, CornerHeatmapModel
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,17 +42,14 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process a single image with default models
-  python demo.py -i document.jpg -o results/
-  
-  # Process with custom model paths
-  python demo.py -i photo.jpg --enhancement-model my_unet.pth --corner-model my_corners.pth -o output/
+  # Process a single image
+  python demo.py -i document.jpg -o results/ --enhancement-model checkpoints/enhancement_regularized_v2/best_model.pth --corner-model checkpoints/corner_heatmap_regularized_v4/best_model.pth --corner-approach heatmap
   
   # Enable visualization
-  python demo.py -i doc.jpg -o results/ --visualize
+  python demo.py -i doc.jpg -o results/ --enhancement-model ... --corner-model ... --visualize
   
   # Batch process a directory
-  python demo.py -i images/ -o scanned/ --batch
+  python demo.py -i images/ -o scanned/ --enhancement-model ... --corner-model ... --batch
         """,
     )
     
@@ -76,21 +68,21 @@ Examples:
     parser.add_argument(
         "--enhancement-model",
         type=str,
-        default=None,
-        help="Path to enhancement model checkpoint (default: checkpoints/enhancement/best.pth)",
+        required=True,
+        help="Strict path to enhancement model checkpoint (e.g., checkpoints/enhancement_regularized_v2/best_model.pth)",
     )
     parser.add_argument(
         "--corner-model",
         type=str,
-        default=None,
-        help="Path to corner detection model checkpoint (default: checkpoints/corner_heat/best.pth)",
+        required=True,
+        help="Strict path to corner detection model checkpoint (e.g., checkpoints/corner_heatmap_regularized_v4/best_model.pth)",
     )
     parser.add_argument(
         "--corner-approach",
         type=str,
         choices=["regression", "heatmap"],
         default="heatmap",
-        help="Corner detection approach (default: heatmap)",
+        help="Corner detection approach corresponding to the loaded corner model (default: heatmap)",
     )
     parser.add_argument(
         "--visualize",
@@ -136,44 +128,12 @@ def get_device(device_str: str) -> torch.device:
         return torch.device("cpu")
 
 
-def find_default_model(model_type: str) -> Optional[str]:
-    """Find default model checkpoint path."""
-    default_paths = {
-        "enhancement": [
-            "checkpoints/enhancement/best.pth",
-            "checkpoints/enhancement/latest.pth",
-        ],
-        "corner_heat": [
-            "checkpoints/corner_heat/best.pth",
-            "checkpoints/corner_heat/latest.pth",
-        ],
-        "corner_reg": [
-            "checkpoints/corner_reg/best.pth",
-            "checkpoints/corner_reg/latest.pth",
-        ],
-    }
-    
-    for path in default_paths.get(model_type, []):
-        if os.path.exists(path):
-            return path
-    
-    return None
-
-
 def load_enhancement_model(
-    model_path: Optional[str],
+    model_path: str,
     device: torch.device,
     image_size: int = 512,
 ) -> torch.nn.Module:
-    """Load enhancement model from checkpoint or default location."""
-    if model_path is None:
-        model_path = find_default_model("enhancement")
-        if model_path is None:
-            raise FileNotFoundError(
-                "Enhancement model not found. Please provide --enhancement-model path "
-                "or place model at checkpoints/enhancement/best.pth"
-            )
-    
+    """Load enhancement model directly from the provided strict path."""
     print(f"Loading enhancement model from: {model_path}")
     model = load_model(
         "enhancement",
@@ -185,23 +145,13 @@ def load_enhancement_model(
 
 
 def load_corner_model(
-    model_path: Optional[str],
+    model_path: str,
     approach: str,
     device: torch.device,
     image_size: int = 512,
 ) -> torch.nn.Module:
-    """Load corner detection model from checkpoint or default location."""
-    if model_path is None:
-        model_type = "corner_heat" if approach == "heatmap" else "corner_reg"
-        model_path = find_default_model(model_type)
-        if model_path is None:
-            raise FileNotFoundError(
-                f"Corner model not found. Please provide --corner-model path "
-                f"or place model at checkpoints/{model_type}/best.pth"
-            )
-    
+    """Load corner detection model directly from the provided strict path."""
     print(f"Loading corner model ({approach}) from: {model_path}")
-    
     model_type = "corner_heatmap" if approach == "heatmap" else "corner_regression"
     model = load_model(
         model_type,
@@ -239,22 +189,21 @@ def process_single_image(
     base_name = Path(image_path).stem
     output_paths = {}
     
-    # Step 1: Detect corners (Pass corner_model FIRST, then image_bgr)
+    # Step 1: Detect corners
     print("  Step 1: Detecting corners...")
     if corner_approach == "heatmap":
-        corners_px, heatmaps_np = detect_corners_heatmap(
+        corners_px, _, heatmaps_np = detect_corners_heatmap(
             corner_model,
             image_bgr,
             device=str(device),
         )
         
-        # --- بخش جدید: ذخیره نقشه‌های حرارتی خام ---
+        # Save raw heatmaps visualization
         if heatmaps_np is not None:
             fig, axes = plt.subplots(2, 2, figsize=(10, 10))
-            titles = ['Channel 0', 'Channel 1', 'Channel 2', 'Channel 3']
+            titles = ['Top-Left', 'Top-Right', 'Bottom-Right', 'Bottom-Left']
             for i, ax in enumerate(axes.flat):
                 if i < len(heatmaps_np):
-                    # استفاده از colormap حرارتی برای دید بهتر
                     ax.imshow(heatmaps_np[i], cmap='jet')
                     ax.set_title(f"Heatmap {titles[i]}")
                 ax.axis('off')
@@ -264,7 +213,6 @@ def process_single_image(
             plt.close()
             output_paths["heatmaps"] = heatmap_viz_path
             print(f"  Saved raw heatmaps: {heatmap_viz_path}")
-        # --------------------------------------------
 
     else:
         corners_px, _ = detect_corners_regression(
@@ -289,8 +237,7 @@ def process_single_image(
     print("  Step 2: Applying perspective transform...")
     warped_bgr = apply_perspective_transform(
         image_bgr,
-        corners_ordered,
-        output_size=(image_size, image_size),
+        corners_ordered
     )
     
     if save_intermediate:
@@ -301,11 +248,10 @@ def process_single_image(
     
     # Step 3: Enhance document
     print("  Step 3: Enhancing document...")
-    enhanced_bgr, _ = enhance_document(
+    enhanced_bgr = enhance_document(
         enhancement_model,
         warped_bgr,
-        device=str(device),
-        image_size=image_size,
+        device=str(device)
     )
     
     # Save enhanced result
@@ -325,6 +271,8 @@ def process_single_image(
         
         # Original with corners
         axes[0].imshow(image_rgb)
+        if save_intermediate or visualize:
+            axes[0].imshow(cv2.cvtColor(corner_viz, cv2.COLOR_RGB2BGR))
         axes[0].set_title("Original Photo")
         axes[0].axis('off')
         
@@ -421,7 +369,7 @@ def main():
             print(f"Error: Input file not found: {args.input}")
             sys.exit(1)
     
-    # Load models
+    # Load models strictly from paths
     print("\nLoading models...")
     try:
         enhancement_model = load_enhancement_model(
@@ -437,11 +385,8 @@ def main():
             image_size=args.image_size,
         )
         print("Models loaded successfully!\n")
-    except FileNotFoundError as e:
-        print(f"\nError: {e}")
-        print("\nTo fix this, either:")
-        print("  1. Train models and place them in checkpoints/")
-        print("  2. Provide model paths with --enhancement-model and --corner-model")
+    except Exception as e:
+        print(f"\nError loading models: {e}")
         sys.exit(1)
     
     # Process images
