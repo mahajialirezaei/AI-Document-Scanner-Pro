@@ -240,31 +240,74 @@ def train_e2e_pipeline(
 
 
 if __name__ == '__main__':
-    # Example usage and testing
+    import argparse
+    import sys
+    import os
+    
+    from src.models.model import EnhancementUNet, CornerHeatmapModel
+    from src.data.data_splitter import get_synthetic_splits
+    
     logging.basicConfig(level=logging.INFO)
     
+    parser = argparse.ArgumentParser(description="End-to-End Joint Fine-tuning (Bonus Phase)")
+    parser.add_argument("--clean-scans", type=str, default="data/clean_scans")
+    parser.add_argument("--backgrounds", type=str, default="data/random_backgrounds")
+    parser.add_argument("--corner-ckpt", type=str, required=True, help="Path to pre-trained corner model (Gold)")
+    parser.add_argument("--enhancement-ckpt", type=str, required=True, help="Path to pre-trained enhancement model (Gold)")
+    parser.add_argument("--save-dir", type=str, default="checkpoints/e2e_finetuned")
+    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=1e-5, help="Low learning rate for fine-tuning")
+    parser.add_argument("--image-size", type=int, default=512)
+    
+    args = parser.parse_args()
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device: {device}")
     
-    # Create sample models
-    enhancement_model = EnhancementUNet(dropout_rate=0.0)
-    corner_model = CornerRegressionModel(dropout_rate=0.0)
-    
-    print("Creating SequentialE2ETrainer...")
-    trainer = SequentialE2ETrainer(
-        enhancement_model,
-        corner_model,
-        device,
-        image_size=(256, 256),
-        lr=1e-4
+    os.makedirs(args.save_dir, exist_ok=True)
+
+    # 1. Load Dataset
+    logger.info("Preparing Synthetic Dataset Splits...")
+    train_ds, val_ds, _ = get_synthetic_splits(
+        clean_scans_dir=args.clean_scans,
+        backgrounds_dir=args.backgrounds,
+        image_size=(args.image_size, args.image_size),
+        seed=42,
+        num_eval_samples=50,
+        train_samples_per_epoch=1000  # Smaller epoch for fine-tuning
     )
     
-    # Test with dummy data
-    batch_size = 2
-    images = torch.randn(batch_size, 3, 256, 256).to(device)
-    targets = torch.randn(batch_size, 3, 256, 256).to(device)
+    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+
+    # 2. Load Gold Models
+    logger.info("Loading pre-trained Gold models...")
     
-    print("\nTesting sequential joint training step...")
-    losses = trainer.train_step_joint(images, targets)
-    print(f"Losses: {losses}")
+    enhancement_model = EnhancementUNet(dropout_rate=0.3)
+    enh_ckpt = torch.load(args.enhancement_ckpt, map_location=device, weights_only=True)
+    enh_state = enh_ckpt.get('model_state_dict', enh_ckpt)
+    if list(enh_state.keys())[0].startswith('module.'):
+        enh_state = {k.replace('module.', ''): v for k, v in enh_state.items()}
+    enhancement_model.load_state_dict(enh_state)
+
+    corner_model = CornerHeatmapModel(dropout_rate=0.3)
+    corner_ckpt = torch.load(args.corner_ckpt, map_location=device, weights_only=True)
+    corner_state = corner_ckpt.get('model_state_dict', corner_ckpt)
+    if list(corner_state.keys())[0].startswith('module.'):
+        corner_state = {k.replace('module.', ''): v for k, v in corner_state.items()}
+    corner_model.load_state_dict(corner_state)
+
+    # 3. Start E2E Training
+    logger.info("Starting End-to-End Fine-tuning...")
+    history = train_e2e_pipeline(
+        dataloader=train_loader,
+        enhancement_model=enhancement_model,
+        corner_model=corner_model,
+        device=device,
+        epochs=args.epochs,
+        image_size=(args.image_size, args.image_size),
+        lr=args.lr,
+        checkpoint_dir=Path(args.save_dir)
+    )
     
-    print("\n✅ End-to-End sequential pipeline ready!")
+    logger.info("✅ End-to-End Fine-tuning completed!")
