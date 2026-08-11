@@ -29,8 +29,15 @@ def load_model(model_type: str, checkpoint_path: str, device: str = "cuda" if to
         raise ValueError(f"Unknown model type: {model_type}")
         
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+    if isinstance(checkpoint, dict):
+        if model_type == "enhancement" and 'enhancement_model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['enhancement_model_state_dict'])
+        elif (model_type == "corner_heatmap" or model_type == "corner_regression") and 'corner_model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['corner_model_state_dict'])
+        elif 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint)
     else:
         model.load_state_dict(checkpoint)
         
@@ -76,10 +83,6 @@ def apply_adaptive_binarization(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
 def apply_ink_boost_filter(image: np.ndarray, gamma: float = 0.82, sharpness: float = 1.35) -> np.ndarray:
-    """
-    Post-processing filter: Enhances ink density and crispness without hard thresholding.
-    Uses Luminance Gamma correction in YCrCb color space + Unsharp Masking.
-    """
     ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
     y, cr, cb = cv2.split(ycrcb)
     
@@ -138,13 +141,11 @@ def detect_corners_heatmap(model: torch.nn.Module, raw_image: np.ndarray, device
     return corners, confidences, heatmaps_np
 
 def polygon_area(corners: np.ndarray) -> float:
-    """Calculates the area of a polygon using the Shoelace formula."""
     x = corners[:, 0]
     y = corners[:, 1]
     return 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
 
 def get_internal_angles(quad: np.ndarray) -> List[float]:
-    """Calculates the 4 internal angles of a quadrilateral in degrees."""
     angles = []
     for i in range(4):
         p1 = quad[(i-1)%4]
@@ -158,10 +159,6 @@ def get_internal_angles(quad: np.ndarray) -> List[float]:
     return angles
 
 def detect_corners_ensemble(models: List[torch.nn.Module], raw_image: np.ndarray, device: str) -> np.ndarray:
-    """
-    Advanced Smart Ensemble 3.0: 
-    Implements strict projective geometry heuristics and perspective symmetry rules.
-    """
     all_corners = []
     all_confs = []
     
@@ -302,13 +299,7 @@ def draw_corners_on_image(image: np.ndarray, corners: np.ndarray) -> np.ndarray:
         cv2.circle(output, pt1, 8, color, -1)
     return output
 
-# --- GATEKEEPER FUNCTIONS ---
-
 def is_already_cropped(image: np.ndarray, variance_thresh: float = 800.0, white_thresh: int = 180, white_ratio: float = 0.70) -> bool:
-    """
-    Idea A (V2): Statistically determines if an image has already been cropped
-    by analyzing the homogeneity and brightness of its outer borders independently.
-    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
     h, w = gray.shape
     
@@ -335,10 +326,6 @@ def is_already_cropped(image: np.ndarray, variance_thresh: float = 800.0, white_
     return bool(valid_edges >= 3)
 
 def is_already_enhanced(image: np.ndarray, white_thresh: int = 240, mass_threshold: float = 0.40) -> bool:
-    """
-    Idea C: Statistically determines if an image has already been enhanced/scanned
-    by checking the right-tail mass (pure white pixels) of its grayscale histogram.
-    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
     white_mass_ratio = np.sum(gray > white_thresh) / gray.size
     
@@ -360,7 +347,6 @@ class DocumentScanningPipeline:
     ) -> Dict:
         results = {}
         
-        # --- 1. Check Idea A: Already Cropped? ---
         if is_already_cropped(raw_image):
             h, w = raw_image.shape[:2]
             corners = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype=np.float32)
@@ -369,9 +355,10 @@ class DocumentScanningPipeline:
         else:
             if corner_method == "ensemble":
                 models_to_ensemble = [
-                    self.models["heatmap_v4_reg"], # 🥇 Gold
-                    self.models["heatmap_v3"],     # 🥈 Silver
-                    self.models["heatmap_v2"]      # 🥉 Bronze
+                    self.models.get("heatmap_e2e", self.models["heatmap_v4_reg"]), 
+                    self.models["heatmap_v4_reg"], 
+                    self.models["heatmap_v3"],     
+                    self.models["heatmap_v2"]      
                 ]
                 corners = detect_corners_ensemble(models_to_ensemble, raw_image, self.device)
             elif corner_method == "regression":
@@ -383,13 +370,11 @@ class DocumentScanningPipeline:
             results['corners_image'] = draw_corners_on_image(raw_image, corners)
             rectified = apply_perspective_transform(raw_image, corners)
         
-        # --- 2. Check Idea C: Already Enhanced? ---
         if is_already_enhanced(rectified):
             enhanced = rectified.copy()
         else:
             enhanced = enhance_document(self.models[enhancement_method], rectified, self.device)
             
-        # --- 3. Optional Post-Processing Filters ---
         if apply_ink_boost:
             enhanced = apply_ink_boost_filter(enhanced)
             
@@ -398,7 +383,6 @@ class DocumentScanningPipeline:
             
         results['enhanced'] = enhanced
         
-        # --- 4. Metrics Calculation ---
         metrics = {}
         if compute_ocr_metrics:
             raw_ocr = compute_ocr_metrics(rectified)
