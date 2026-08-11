@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Tuple
-import logging
+import time
 from pathlib import Path
 
 cv2.setNumThreads(0)
@@ -29,8 +29,6 @@ except ImportError:
 from src.models.model import EnhancementUNet, CornerHeatmapModel
 from src.training.losses import EnhancementLoss
 from src.data.data_splitter import get_synthetic_splits
-
-logger = logging.getLogger(__name__)
 
 
 class SequentialE2ETrainer:
@@ -63,8 +61,6 @@ class SequentialE2ETrainer:
         )
         
         self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
-        
-        logger.info(f"SequentialE2ETrainer initialized - Image size: {image_size}, LR: {lr}")
     
     def _corners_to_homography(self, pred_corners: torch.Tensor) -> torch.Tensor:
         B = pred_corners.shape[0]
@@ -80,7 +76,7 @@ class SequentialE2ETrainer:
         H = get_perspective_transform(pred_corners_denorm, flat_corners_batch)
         return H
     
-    def train_step_joint(self, images: torch.Tensor, enhancement_targets: torch.Tensor) -> Dict[str, float]:
+    def train_step_joint(self, images: torch.Tensor, enhancement_targets: torch.Tensor) -> float:
         self.enhancement_model.train()
         self.corner_model.train()
         
@@ -89,7 +85,6 @@ class SequentialE2ETrainer:
         
         self.optimizer.zero_grad(set_to_none=True)
         
-        # Execute forward pass with Automatic Mixed Precision (AMP)
         with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
             corner_output = self.corner_model(images)
             pred_corners = corner_output[0] if isinstance(corner_output, tuple) else corner_output
@@ -102,18 +97,40 @@ class SequentialE2ETrainer:
             enhanced_output = self.enhancement_model(rectified_crop)
             loss = self.criterion(enhanced_output, enhancement_targets)
         
-        # Backpropagate through entire chain using AMP Scaler
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(list(self.enhancement_model.parameters()) + list(self.corner_model.parameters()), max_norm=1.0)
         self.scaler.step(self.optimizer)
         self.scaler.update()
         
-        return {'total_loss': loss.item(), 'enhancement_loss': loss.item()}
+        return loss.item()
+
+    @torch.no_grad()
+    def validate_step_joint(self, images: torch.Tensor, enhancement_targets: torch.Tensor) -> float:
+        self.enhancement_model.eval()
+        self.corner_model.eval()
+        
+        images = images.to(self.device, non_blocking=True)
+        enhancement_targets = enhancement_targets.to(self.device, non_blocking=True)
+        
+        with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
+            corner_output = self.corner_model(images)
+            pred_corners = corner_output[0] if isinstance(corner_output, tuple) else corner_output
+            
+            H = self._corners_to_homography(pred_corners)
+            
+            h, w = self.image_size
+            rectified_crop = warp_perspective(images, H, (h, w))
+            
+            enhanced_output = self.enhancement_model(rectified_crop)
+            loss = self.criterion(enhanced_output, enhancement_targets)
+            
+        return loss.item()
 
 
 def train_e2e_pipeline(
-    dataloader: DataLoader,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
     enhancement_model: nn.Module,
     corner_model: nn.Module,
     device: torch.device,
@@ -124,52 +141,73 @@ def train_e2e_pipeline(
 ) -> Dict[str, List[float]]:
     
     trainer = SequentialE2ETrainer(enhancement_model, corner_model, device, image_size=image_size, lr=lr)
-    history = {'total_loss': []}
+    history = {'train_loss': [], 'val_loss': [], 'lr': []}
     
-    for epoch in range(epochs):
-        epoch_total_loss = 0.0
-        num_batches = 0
+    print(f"Starting End-to-End Joint training for {epochs} epochs...")
+    print(f"Save directory: {checkpoint_dir}")
+    
+    best_val_loss = float('inf')
+    
+    for epoch in range(1, epochs + 1):
+        start_time = time.time()
         
-        for batch_idx, batch in enumerate(dataloader):
+        # Training Phase
+        epoch_train_loss = 0.0
+        num_train_batches = 0
+        for batch in train_loader:
             images = batch['raw_photo'] if isinstance(batch, dict) else batch[0]
             targets = batch['clean_target'] if isinstance(batch, dict) else batch[1]
             
-            losses = trainer.train_step_joint(images, targets)
-            epoch_total_loss += losses.get('total_loss', 0.0)
-            num_batches += 1
+            loss = trainer.train_step_joint(images, targets)
+            epoch_train_loss += loss
+            num_train_batches += 1
             
-            if batch_idx % 20 == 0:
-                logger.info(f"Epoch {epoch+1}/{epochs}, Batch {batch_idx}: Loss = {losses.get('total_loss', 0.0):.4f}")
+        train_loss = epoch_train_loss / num_train_batches if num_train_batches > 0 else 0.0
         
-        avg_total_loss = epoch_total_loss / num_batches
-        history['total_loss'].append(avg_total_loss)
-        logger.info(f"Epoch {epoch+1}/{epochs} completed - Avg Loss: {avg_total_loss:.4f}")
-        
-        if checkpoint_dir and (epoch + 1) % 5 == 0:
-            checkpoint_path = checkpoint_dir / f'e2e_checkpoint_epoch{epoch+1}.pth'
-            torch.save({
-                'epoch': epoch,
-                'enhancement_model_state_dict': enhancement_model.state_dict(),
-                'corner_model_state_dict': corner_model.state_dict(),
-                'val_loss': avg_total_loss, # dummy val_loss to maintain compatibility
-            }, checkpoint_path)
-            logger.info(f"Checkpoint saved to {checkpoint_path}")
+        # Validation Phase
+        epoch_val_loss = 0.0
+        num_val_batches = 0
+        for batch in val_loader:
+            images = batch['raw_photo'] if isinstance(batch, dict) else batch[0]
+            targets = batch['clean_target'] if isinstance(batch, dict) else batch[1]
             
-    # Save the final best model format at the end
-    if checkpoint_dir:
-        final_path = checkpoint_dir / 'best_model.pth'
-        torch.save({
-            'epoch': epochs,
-            'enhancement_model_state_dict': enhancement_model.state_dict(),
-            'corner_model_state_dict': corner_model.state_dict(),
-        }, final_path)
+            loss = trainer.validate_step_joint(images, targets)
+            epoch_val_loss += loss
+            num_val_batches += 1
+            
+        val_loss = epoch_val_loss / num_val_batches if num_val_batches > 0 else float('inf')
         
+        current_lr = trainer.optimizer.param_groups[0]['lr']
+        elapsed = time.time() - start_time
+        
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['lr'].append(current_lr)
+        
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            if checkpoint_dir:
+                torch.save({
+                    'epoch': epoch,
+                    'enhancement_model_state_dict': enhancement_model.state_dict(),
+                    'corner_model_state_dict': corner_model.state_dict(),
+                    'optimizer_state_dict': trainer.optimizer.state_dict(),
+                    'val_loss': val_loss,
+                }, checkpoint_dir / 'best_model.pth')
+        
+        print(f"Epoch {epoch:3d}/{epochs} | "
+              f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
+              f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
+        
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+            
+    print(f"\nTraining complete! Best validation loss: {best_val_loss:.6f}")
     return history
 
 
 if __name__ == '__main__':
     import argparse
-    logging.basicConfig(level=logging.INFO)
     
     parser = argparse.ArgumentParser(description="End-to-End Joint Fine-tuning (Bonus Phase)")
     parser.add_argument("--clean-scans", type=str, default="data/clean_scans")
@@ -185,25 +223,24 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
+    print(f"Using device: {device}")
     
     os.makedirs(args.save_dir, exist_ok=True)
 
-    # 1. Load Dataset
-    logger.info("Preparing Synthetic Dataset Splits...")
-    train_ds, _, _ = get_synthetic_splits(
+    print("Preparing Synthetic Dataset Splits...")
+    train_ds, val_ds, _ = get_synthetic_splits(
         clean_scans_dir=args.clean_scans,
         backgrounds_dir=args.backgrounds,
         image_size=(args.image_size, args.image_size),
         seed=42,
-        num_eval_samples=10, 
+        num_eval_samples=20, 
         train_samples_per_epoch=1000
     )
     
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    # 2. Load Gold Models
-    logger.info("Loading pre-trained Gold models...")
+    print("Loading pre-trained Gold models...")
     
     enhancement_model = EnhancementUNet(dropout_rate=0.3)
     enh_ckpt = torch.load(args.enhancement_ckpt, map_location=device, weights_only=True)
@@ -219,10 +256,9 @@ if __name__ == '__main__':
         corner_state = {k.replace('module.', ''): v for k, v in corner_state.items()}
     corner_model.load_state_dict(corner_state)
 
-    # 3. Start E2E Training
-    logger.info("Starting End-to-End Fine-tuning...")
     history = train_e2e_pipeline(
-        dataloader=train_loader,
+        train_loader=train_loader,
+        val_loader=val_loader,
         enhancement_model=enhancement_model,
         corner_model=corner_model,
         device=device,
@@ -231,5 +267,3 @@ if __name__ == '__main__':
         lr=args.lr,
         checkpoint_dir=Path(args.save_dir)
     )
-    
-    logger.info("✅ End-to-End Fine-tuning completed!")
