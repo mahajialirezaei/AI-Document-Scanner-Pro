@@ -75,7 +75,7 @@ def apply_adaptive_binarization(image: np.ndarray) -> np.ndarray:
     binary = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 51, 15)
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
-def apply_ink_boost(image: np.ndarray, gamma: float = 0.82, sharpness: float = 1.35) -> np.ndarray:
+def apply_ink_boost_filter(image: np.ndarray, gamma: float = 0.82, sharpness: float = 1.35) -> np.ndarray:
     """
     Post-processing filter: Enhances ink density and crispness without hard thresholding.
     Uses Luminance Gamma correction in YCrCb color space + Unsharp Masking.
@@ -391,7 +391,7 @@ class DocumentScanningPipeline:
             
         # --- 3. Optional Post-Processing Filters ---
         if apply_ink_boost:
-            enhanced = apply_ink_boost(enhanced)
+            enhanced = apply_ink_boost_filter(enhanced)
             
         if apply_binarization:
             enhanced = apply_adaptive_binarization(enhanced)
