@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from src.pipelines.inference import (
     DocumentScanningPipeline, load_model, apply_perspective_transform, 
-    enhance_document, apply_adaptive_binarization, apply_ink_boost,
+    enhance_document, apply_adaptive_binarization, apply_ink_boost_filter,
     is_already_cropped, is_already_enhanced, detect_corners_ensemble, 
     detect_corners_heatmap, order_corners
 )
@@ -183,7 +183,7 @@ async def interactive_enhance(
             enhanced = enhance_document(models_registry[enhancement_method], rectified, device)
         
         if do_ink_boost:
-            enhanced = apply_ink_boost(enhanced)
+            enhanced = apply_ink_boost_filter(enhanced)
             
         if do_binarization:
             enhanced = apply_adaptive_binarization(enhanced)
