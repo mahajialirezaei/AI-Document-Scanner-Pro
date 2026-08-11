@@ -12,8 +12,9 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 
 from src.pipelines.inference import (
     DocumentScanningPipeline, load_model, apply_perspective_transform, 
-    enhance_document, apply_adaptive_binarization, is_already_cropped, 
-    is_already_enhanced, detect_corners_ensemble, detect_corners_heatmap, order_corners
+    enhance_document, apply_adaptive_binarization, apply_ink_boost,
+    is_already_cropped, is_already_enhanced, detect_corners_ensemble, 
+    detect_corners_heatmap, order_corners
 )
 
 app = FastAPI(title="Document Scanner & Enhancer API")
@@ -51,7 +52,8 @@ async def scan_document(
     reference_file: UploadFile = File(None),
     corner_method: str = Form("ensemble"),
     enhancement_method: str = Form("enh_regularized_v2"),
-    apply_binarization: str = Form("false")
+    apply_binarization: str = Form("false"),
+    apply_ink_boost: str = Form("false")
 ):
     if pipeline is None:
         raise HTTPException(status_code=500, detail="Pipeline not initialized.")
@@ -59,6 +61,7 @@ async def scan_document(
     try:
         file_bytes = await file.read()
         do_binarization = apply_binarization.lower() == 'true'
+        do_ink_boost = apply_ink_boost.lower() == 'true'
 
         if file.content_type == "application/pdf":
             doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -72,7 +75,14 @@ async def scan_document(
                 elif pix.n == 3: img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                 else: img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
 
-                results = pipeline.process(img, corner_method, enhancement_method, do_binarization, None)
+                results = pipeline.process(
+                    img, 
+                    corner_method, 
+                    enhancement_method, 
+                    do_binarization, 
+                    apply_ink_boost=do_ink_boost,
+                    reference_img=None
+                )
                 enh_rgb = cv2.cvtColor(results['enhanced'], cv2.COLOR_BGR2RGB)
                 
                 pil_img = Image.fromarray(enh_rgb)
@@ -91,7 +101,14 @@ async def scan_document(
             ref_bytes = await reference_file.read()
             ref_image = cv2.imdecode(np.frombuffer(ref_bytes, np.uint8), cv2.IMREAD_COLOR)
 
-        results = pipeline.process(raw_image, corner_method, enhancement_method, do_binarization, ref_image)
+        results = pipeline.process(
+            raw_image, 
+            corner_method, 
+            enhancement_method, 
+            do_binarization, 
+            apply_ink_boost=do_ink_boost,
+            reference_img=ref_image
+        )
 
         _, buf_enh = cv2.imencode('.jpg', results['enhanced'], [int(cv2.IMWRITE_JPEG_QUALITY), 95])
         _, buf_crn = cv2.imencode('.jpg', results['corners_image'], [int(cv2.IMWRITE_JPEG_QUALITY), 95])
@@ -142,7 +159,8 @@ async def interactive_enhance(
     file: UploadFile = File(...),
     corners: str = Form(...),
     enhancement_method: str = Form("enh_regularized_v2"),
-    apply_binarization: str = Form("false")
+    apply_binarization: str = Form("false"),
+    apply_ink_boost: str = Form("false")
 ):
     try:
         raw_bytes = await file.read()
@@ -155,6 +173,7 @@ async def interactive_enhance(
         corners_px[:, 1] *= h
         
         do_binarization = apply_binarization.lower() == 'true'
+        do_ink_boost = apply_ink_boost.lower() == 'true'
         
         rectified = apply_perspective_transform(raw_image, corners_px)
         
@@ -163,6 +182,9 @@ async def interactive_enhance(
         else:
             enhanced = enhance_document(models_registry[enhancement_method], rectified, device)
         
+        if do_ink_boost:
+            enhanced = apply_ink_boost(enhanced)
+            
         if do_binarization:
             enhanced = apply_adaptive_binarization(enhanced)
             
