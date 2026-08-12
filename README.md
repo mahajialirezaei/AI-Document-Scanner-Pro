@@ -110,31 +110,109 @@ python demo.py \
 
 ## 📈 Usage: Unified Evaluation
 
-The `evaluate.py` script computes rigorous mathematical metrics (PSNR, SSIM) on synthetic data and functional readability metrics (OCR Confidence, MLE) on real data.
+The `evaluate.py` script is designed to run rigorous benchmarks on all models. You can evaluate models on `synthetic` data (measuring PSNR, SSIM, and geometric localization errors) or `real` data (measuring Optical Character Recognition (OCR) confidence and real-world geometric accuracy).
 
-### Evaluate on Real Data (OCR & Geometric Localization)
+Below is the complete reference of commands required to evaluate every iteration of the models in the registry.
+
+### 1. Evaluating Pure Enhancement Models (Using Ground Truth Corners)
+
+To isolate the performance of the U-Net models without the influence of corner prediction errors, use the `--use-gt-corners` flag.
+
+**Enhancement Clean Nodropout (v1 & v2):**
 
 ```bash
-python evaluate.py \
-    --dataset-type real \
-    --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth \
-    --corner-ckpt checkpoints/corner_heatmap_regularized_v4/best_model.pth \
-    --task corner_heatmap
+# Synthetic Data (PSNR / SSIM)
+python evaluate.py --dataset-type synthetic --use-gt-corners --enhancement-ckpt checkpoints/enhancement_clean_nodropout/best_model.pth
+python evaluate.py --dataset-type synthetic --use-gt-corners --enhancement-ckpt checkpoints/enhancement_clean_nodropout_v2/best_model.pth
+
+# Real Data (OCR Confidence)
+python evaluate.py --dataset-type real --use-gt-corners --enhancement-ckpt checkpoints/enhancement_clean_nodropout/best_model.pth
+python evaluate.py --dataset-type real --use-gt-corners --enhancement-ckpt checkpoints/enhancement_clean_nodropout_v2/best_model.pth
 
 ```
 
-### Evaluate on Synthetic Test Split (PSNR & SSIM)
+**Enhancement Regularized (v1 & v2):**
 
 ```bash
-python evaluate.py \
-    --dataset-type synthetic \
-    --enhancement-ckpt checkpoints/enhancement_clean_nodropout_v2/best_model.pth \
-    --corner-ckpt checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth \
-    --task corner_heatmap
+# Synthetic Data (PSNR / SSIM)
+python evaluate.py --dataset-type synthetic --use-gt-corners --enhancement-ckpt checkpoints/enhancement_regularized/best_model.pth
+python evaluate.py --dataset-type synthetic --use-gt-corners --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+
+# Real Data (OCR Confidence)
+python evaluate.py --dataset-type real --use-gt-corners --enhancement-ckpt checkpoints/enhancement_regularized/best_model.pth
+python evaluate.py --dataset-type real --use-gt-corners --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
 
 ```
 
-*Tip: Use `--use-gt-corners` to bypass the corner model and test the pure restorative capacity of the U-Net.*
+---
+
+### 2. Evaluating Corner Detection Models (Fixed Enhancement Baseline)
+
+To measure the exact geometric impact of each corner model, we pair them with the Gold Enhancement model (`enhancement_regularized_v2`).
+
+#### A. Corner Heatmap Models (`--task corner_heatmap`)
+
+**Clean Nodropout Iterations (v1 to v4):**
+
+```bash
+# Synthetic Data
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout_v2/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout_v4/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+
+# Real Data
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout_v2/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_clean_nodropout_v4/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+
+```
+
+**Regularized Iterations (v1 to v4):**
+
+```bash
+# Synthetic Data
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized_v2/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized_v3/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized_v4/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+
+# Real Data
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized_v2/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized_v3/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/corner_heatmap_regularized_v4/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+
+```
+
+#### B. Corner Regression Models (`--task corner_regression`)
+
+```bash
+# Synthetic Data
+python evaluate.py --dataset-type synthetic --task corner_regression --corner-ckpt checkpoints/corner_regression_clean_nodropout/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type synthetic --task corner_regression --corner-ckpt checkpoints/corner_regression_regularized/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+
+# Real Data
+python evaluate.py --dataset-type real --task corner_regression --corner-ckpt checkpoints/corner_regression_clean_nodropout/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+python evaluate.py --dataset-type real --task corner_regression --corner-ckpt checkpoints/corner_regression_regularized/best_model.pth --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth
+
+```
+
+---
+
+### 3. Evaluating End-to-End Joint Training Model
+
+The `e2e_finetuned` checkpoint holds combined state dictionaries for both networks. You must supply this singular checkpoint path to both arguments.
+
+```bash
+# Synthetic Data
+python evaluate.py --dataset-type synthetic --task corner_heatmap --corner-ckpt checkpoints/e2e_finetuned/best_model.pth --enhancement-ckpt checkpoints/e2e_finetuned/best_model.pth
+
+# Real Data
+python evaluate.py --dataset-type real --task corner_heatmap --corner-ckpt checkpoints/e2e_finetuned/best_model.pth --enhancement-ckpt checkpoints/e2e_finetuned/best_model.pth
+
+```
 
 ---
 
@@ -167,10 +245,15 @@ python src/training/train.py \
 ```
 
 **3. End-to-End Joint Training (Bonus Phase):**
-Fine-tune the entire differentiable chain (Corner -> Kornia Warp -> Enhancement) jointly:
+Fine-tune the entire differentiable chain (Corner -> Kornia Warp -> Enhancement) jointly utilizing Selective AMP to prevent Float16 underflows:
 
 ```bash
-python src/pipelines/train_e2e.py
+python -m src.pipelines.train_e2e \
+    --corner-ckpt checkpoints/corner_heatmap_regularized_v4/best_model.pth \
+    --enhancement-ckpt checkpoints/enhancement_regularized_v2/best_model.pth \
+    --epochs 15 \
+    --batch-size 2 \
+    --lr 1e-5
 
 ```
 
@@ -194,13 +277,14 @@ python web_app.py
 
 ## 🏆 Model Zoo & Benchmarks
 
-Our definitive experiments yielded a clear trade-off between geometric mathematical fidelity and semantic human readability.
+Our definitive experiments yielded a clear trade-off between geometric mathematical fidelity and semantic human readability, alongside peak localization achieved through joint training.
 
 | Model | Track | Checkpoint Path | PSNR (dB) | SSIM | OCR Conf. / MLE |
 | --- | --- | --- | --- | --- | --- |
 | **🥇 Enh. Regularized v2** | *Readability* | `checkpoints/enhancement_regularized_v2/best_model.pth` | 20.95 | 0.8443 | **56.90%** (OCR) |
 | **🥈 Enh. Clean v2** | *Fidelity* | `checkpoints/enhancement_clean_nodropout_v2/best_model.pth` | **21.54** | **0.8544** | 42.66% (OCR) |
-| **🥇 Corner Heatmap Reg v4** | *Localization* | `checkpoints/corner_heatmap_regularized_v4/best_model.pth` | - | - | **14.97 px** (MLE) |
+| **💎 Corner Heatmap E2E** | *Peak Localization* | `checkpoints/e2e_finetuned/best_model.pth` | - | - | **13.19 px** (MLE) |
+| **🥇 Corner Heatmap Reg v4** | *Semantic Concept* | `checkpoints/corner_heatmap_regularized_v4/best_model.pth` | 19.84 | 0.7710 | 14.97 px (MLE) |
 | **🥈 Corner Heatmap Clean v3** | *Data-Centric* | `checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth` | - | - | 35.04 px (MLE) |
 | **🥉 Corner Regression** | *Baseline* | `checkpoints/corner_regression_clean_nodropout/best_model.pth` | - | - | 68.21 px (MLE) |
 
