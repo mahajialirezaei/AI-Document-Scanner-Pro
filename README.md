@@ -51,7 +51,7 @@ pip install -r requirements.txt
 
 ```
 
-*(Ensure `kornia`, `fastapi`, `uvicorn`, `PyMuPDF (fitz)`, and `pytesseract` are installed for full functionality).*
+*(Ensure `kornia`, `fastapi`, `uvicorn`, `PyMuPDF (fitz)`, and `pytesseract` are installed for full functionality)*.
 
 ---
 
@@ -64,9 +64,9 @@ data/
 ├── clean_scans/             # 50 Clean target scans (1.jpg to 50.jpg)
 ├── random_backgrounds/      # Background images (tables, carpets, floors)
 └── raw/
-    ├── real_photos/         # 15 Real smartphone photos
+    ├── real_photos/         # 23 Real smartphone photos
     │   └── _annotations.coco.json  # Ground-truth corners for evaluation
-    └── real_photos_scanned/ # 15 Reference CamScanner targets (for OCR benchmarks)
+    └── real_photos_scanned/ # 23 Reference CamScanner targets (for OCR benchmarks)
 
 ```
 
@@ -112,7 +112,7 @@ python demo.py \
 
 The `evaluate.py` script is designed to run rigorous benchmarks on all models. You can evaluate models on `synthetic` data (measuring PSNR, SSIM, and geometric localization errors) or `real` data (measuring Optical Character Recognition (OCR) confidence and real-world geometric accuracy).
 
-Below is the complete reference of commands required to evaluate every iteration of the models in the registry.
+Below is the complete reference of commands required to evaluate **every iteration** of the models in the registry.
 
 ### 1. Evaluating Pure Enhancement Models (Using Ground Truth Corners)
 
@@ -271,7 +271,10 @@ python web_app.py
 ```
 
 * Open your browser and navigate to: `http://localhost:8000`
+
 * **Features:** Multi-page PDF uploading, live manual corner adjustments, model toggle (High Fidelity vs. Max Readability), and Magic Ink Boost binarization.
+
+
 
 ---
 
@@ -281,12 +284,12 @@ Our definitive experiments yielded a clear trade-off between geometric mathemati
 
 | Model | Track | Checkpoint Path | PSNR (dB) | SSIM | OCR Conf. / MLE |
 | --- | --- | --- | --- | --- | --- |
-| **🥇 Enh. Regularized v2** | *Readability* | `checkpoints/enhancement_regularized_v2/best_model.pth` | 20.95 | 0.8443 | **56.90%** (OCR) |
-| **🥈 Enh. Clean v2** | *Fidelity* | `checkpoints/enhancement_clean_nodropout_v2/best_model.pth` | **21.54** | **0.8544** | 42.66% (OCR) |
-| **💎 Corner Heatmap E2E** | *Peak Localization* | `checkpoints/e2e_finetuned/best_model.pth` | - | - | **13.19 px** (MLE) |
-| **🥇 Corner Heatmap Reg v4** | *Semantic Concept* | `checkpoints/corner_heatmap_regularized_v4/best_model.pth` | 19.84 | 0.7710 | 14.97 px (MLE) |
-| **🥈 Corner Heatmap Clean v3** | *Data-Centric* | `checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth` | - | - | 35.04 px (MLE) |
-| **🥉 Corner Regression** | *Baseline* | `checkpoints/corner_regression_clean_nodropout/best_model.pth` | - | - | 68.21 px (MLE) |
+| **🥇 Enh. Regularized v2** | *Readability* | `checkpoints/enhancement_regularized_v2/best_model.pth` | **22.47** | **0.8585** | **49.26%** (OCR) |
+| **🥈 Enh. Clean v2** | *Fidelity* | `checkpoints/enhancement_clean_nodropout_v2/best_model.pth` | 22.44 | 0.8583 | 45.78% (OCR) |
+| **💎 Corner Heatmap E2E** | *Peak Localization* | `checkpoints/e2e_finetuned/best_model.pth` | 19.84 | 0.7710 | **13.19 px** (MLE) / 40.11% (OCR) |
+| **🥇 Corner Heatmap Reg v4** | *Semantic Concept* | `checkpoints/corner_heatmap_regularized_v4/best_model.pth` | - | - | 14.97 px (MLE) |
+| **🥈 Corner Heatmap Clean v3** | *Data-Centric* | `checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth` | - | - | 17.23 px (MLE) |
+| **🥉 Corner Regression Baseline** | *Baseline* | `checkpoints/corner_regression_clean_nodropout/best_model.pth` | - | - | 68.21 px (MLE) |
 
 *(Note: Real Corner MSE/MLE measured on unconstrained physical environments. Synthetic Enhancement metrics isolated using GT corners).*
 
@@ -330,8 +333,13 @@ CNN-Applications-Doc-Scanning-And-Enhancement/
 ## 👥 Team
 
 * **Developer**: Mohammad Amin Haji Alirezaei
+
+
 * **Contact**: m.a.hajialirezaei05@gmail.com
+
+
 * **GitHub**: [@mahajialirezaei](https://github.com/mahajialirezaei)
+
 
 ## 📄 License
 
