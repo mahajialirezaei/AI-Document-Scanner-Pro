@@ -80,7 +80,12 @@ def main():
     enhancement_model = EnhancementUNet(dropout_rate=0.0).to(device)
     enhancement_ckpt = torch.load(args.enhancement_ckpt, map_location=device, weights_only=True)
     
-    enhancement_state = enhancement_ckpt.get('model_state_dict', enhancement_ckpt)
+    # UPDATED: Support E2E combined checkpoint
+    if 'enhancement_model_state_dict' in enhancement_ckpt:
+        enhancement_state = enhancement_ckpt['enhancement_model_state_dict']
+    else:
+        enhancement_state = enhancement_ckpt.get('model_state_dict', enhancement_ckpt)
+        
     if list(enhancement_state.keys())[0].startswith('module.'):
         enhancement_state = {k.replace('module.', ''): v for k, v in enhancement_state.items()}
     enhancement_model.load_state_dict(enhancement_state)
@@ -97,7 +102,13 @@ def main():
             corner_model = CornerHeatmapModel(dropout_rate=0.0).to(device)
             
         corner_ckpt = torch.load(args.corner_ckpt, map_location=device, weights_only=True)
-        corner_state = corner_ckpt.get('model_state_dict', corner_ckpt)
+        
+        # UPDATED: Support E2E combined checkpoint
+        if 'corner_model_state_dict' in corner_ckpt:
+            corner_state = corner_ckpt['corner_model_state_dict']
+        else:
+            corner_state = corner_ckpt.get('model_state_dict', corner_ckpt)
+            
         if list(corner_state.keys())[0].startswith('module.'):
             corner_state = {k.replace('module.', ''): v for k, v in corner_state.items()}
         corner_model.load_state_dict(corner_state)
