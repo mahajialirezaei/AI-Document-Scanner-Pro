@@ -30,24 +30,25 @@
 
 ## 1. Approach B: The Heatmap Iterations
 
-### 1.1 `corner_heatmap_clean_nodropout_v2` 🥉 (BRONZE MEDAL)
+### 1.1 `corner_heatmap_clean_nodropout_v2` 🥈 (SILVER MEDAL)
 
 * **Architecture:** Standard U-Net Backbone (`dropout=0.0`).
 * **Additions:** Dual-Temperature SoftArgmax introduced to fix sub-pixel floating points. "Dark Binder Margins" added to synthetic training.
 * **Real-World Performance:**
-* Corner MAE: 21.75 px
-* Corner MSE: 1285.53 px²
+* Corner MAE: 10.79 px
+* Corner MLE (Euclidean): 16.96 px
+* Corner MSE: 317.90 px²
 
 
 * **Analysis:** Functioned as our first geometrically stable model. However, it fell into the "Semantic Trap," confidently snapping its predictions to the external edges of dark binders instead of the actual document paper. It serves as a great fallback for environments with clean backgrounds.
 
-### 1.2 `corner_heatmap_clean_nodropout_v3` 🥈 (SILVER MEDAL)
+### 1.2 `corner_heatmap_clean_nodropout_v3` 🥉 (BRONZE MEDAL)
 
 * **Architecture:** Refined U-Net architecture (`dropout=0.0`).
 * **Real-World Performance:**
-* Corner MAE: 21.42 px
-* Corner MLE (Euclidean): 35.04 px
-* Corner MSE: 1532.80 px²
+* Corner MAE: 10.59 px
+* Corner MLE (Euclidean): 17.23 px
+* Corner MSE: 382.67 px²
 
 
 * **Analysis:** The champion of pure **Data-Centric Regularization**. By relying entirely on heavy synthetic data augmentations (Dark Binder Margins, 3D Drop Shadows, etc.) instead of artificial dropout, the network learned the true semantic boundary of the paper. Because its learning path was entirely data-driven (without network noise), it is the perfect secondary candidate for a Smart Ensemble.
