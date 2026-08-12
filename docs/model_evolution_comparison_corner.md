@@ -1,4 +1,3 @@
-```markdown
 # Model Evolution & Comparison Log
 
 **Objective:** Documenting the evolutionary path, data augmentation strategies, and evaluation metrics from the base model to the Phase-compliant regularized versions. The primary focus is tracking the transition from geometric optimization to semantic robustness, comparing Direct Regression vs. Heatmap approaches, and analyzing the impact of dropout regularization as mandated by the project guidelines.
@@ -11,8 +10,8 @@
 └── corner_heatmap_robust_extreme_v2 (Peak Geometric Accuracy, Failed Semantic Generalization)
 
 [Official Pipeline] Approach B: Heatmap Regression
-├── [Phase 5] corner_heatmap_clean_nodropout_v2 🥉 (Bronze Medal - Strong Geometry, Failed Semantic Trap)
-├── [Phase 5] corner_heatmap_clean_nodropout_v3 🥈 (Silver Medal - Data-Centric Champion)
+├── [Phase 5] corner_heatmap_clean_nodropout_v2 🥈 (Silver Medal - Strong Geometry, Failed Semantic Trap)
+├── [Phase 5] corner_heatmap_clean_nodropout_v3 🥉 (Bronze Medal - Data-Centric Champion)
 ├── [Phase 6] corner_heatmap_regularized_v2 (Global Dropout 0.5 -> Total Geometric Collapse)
 ├── [Phase 6] corner_heatmap_regularized_v3 (Bottleneck Dropout 0.3 -> Partial Geometric Collapse)
 ├── [Phase 6] corner_heatmap_clean_nodropout_v4 (Complex Data Baseline -> Geometric Overfitting)
@@ -51,9 +50,20 @@
 * Corner MSE: 382.67 px²
 
 
-* **Analysis:** The champion of pure **Data-Centric Regularization**. By relying entirely on heavy synthetic data augmentations (Dark Binder Margins, 3D Drop Shadows, etc.) instead of artificial dropout, the network learned the true semantic boundary of the paper. Because its learning path was entirely data-driven (without network noise), it is the perfect secondary candidate for a Smart Ensemble.
+* **Analysis:** The champion of pure **Data-Centric Regularization**. By relying entirely on heavy synthetic data augmentations (Dark Binder Margins, 3D Drop Shadows, etc.) instead of artificial dropout, the network learned the true semantic boundary of the paper. Because its learning path was entirely data-driven (without network noise), it is a highly reliable secondary candidate for a Smart Ensemble.
 
-### 1.3 `corner_heatmap_clean_nodropout_v4` (Phase 6 - Geometric Overfitting)
+### 1.3 `corner_heatmap_regularized_v2` (Phase 6 - Geometric Collapse)
+
+* **Architecture:** Standard U-Net Backbone with unoptimized Global Dropout.
+* **Real-World Performance:**
+* Corner MAE: 60.01 px
+* Corner MLE (Euclidean): 106.76 px
+* Corner MSE: 17625.32 px²
+
+
+* **Analysis:** This model serves as the empirical proof for "The Dropout Fallacy." Applying global dropout across all layers of the U-Net destroyed the network's high-resolution spatial feature extraction capabilities. The model became effectively "blind," attempting to randomly guess coordinates, resulting in catastrophic Euclidean errors (>100px).
+
+### 1.4 `corner_heatmap_clean_nodropout_v4` (Phase 6 - Geometric Overfitting)
 
 * **Architecture:** Standard U-Net Backbone (`dropout=0.0`).
 * **Additions:** Trained on the highly complex v4 dataset (featuring 3D Cylindrical Book Warps, Random Collaged Graphics, and 4% Colored Paper).
@@ -65,7 +75,7 @@
 
 * **Analysis:** Introducing severe structural complexities (like 3D book curves) without any network regularization caused the model to severely overfit to local noises. It lost its global spatial awareness, proving that pure data-centric approaches have limits when the geometric variance becomes too extreme.
 
-### 1.4 `corner_heatmap_regularized_v4` 🥇 (GOLD MEDAL - SEMANTIC CHAMPION)
+### 1.5 `corner_heatmap_regularized_v4` 🥇 (GOLD MEDAL - SEMANTIC CHAMPION)
 
 * **Architecture:** Scheduled Bottleneck Regularization (`dropout=0.3` restricted to deep layers, 5-epoch warm-up).
 * **Real-World Performance:**
@@ -76,7 +86,7 @@
 
 * **Analysis:** By combining the highly complex v4 synthetic dataset with a **Scheduled Bottleneck Dropout**, we prevented the geometric collapse seen in earlier regularized models. The 5-epoch warm-up allowed the network to map its high-resolution spatial topography first. Once the geometry was locked, the bottleneck dropout forced the network to learn the "Semantic Concept" of a document, yielding a 14.97 px error margin in unconstrained real-world environments.
 
-### 1.5 `e2e_finetuned` 💎 (DIAMOND MEDAL - PEAK LOCALIZATION)
+### 1.6 `e2e_finetuned` 💎 (DIAMOND MEDAL - PEAK LOCALIZATION)
 
 * **Architecture:** Jointly fine-tuned U-Net via differentiable Kornia warping (Initialized from `regularized_v4`).
 * **Real-World Performance:**
@@ -134,7 +144,7 @@ Earlier phases led us to believe Dropout was universally catastrophic for coordi
 Training the corner detector iteratively with the enhancement loss effectively minimizes spatial misalignment traps, resulting in peak sub-pixel localization accuracy.
 
 **The Ultimate Solution (End-to-End UI Deployment):**
-To achieve maximum robustness in the final deployment, the system utilizes a **Smart Ensemble Module**. By feeding the raw image through the 💎 **Diamond Medal (`e2e_finetuned`)**, 🥇 **Gold Medal (`regularized_v4`)**, and 🥈 **Silver Medal (`nodropout_v3`)** Heatmap models, we combine networks optimized via joint task feedback, internal regularization, and pure data-centric variance. Extracting the highest-confidence peak from this combined distribution ensures near-perfect document localization regardless of the background environment.
+To achieve maximum robustness in the final deployment, the system utilizes a **Smart Ensemble Module**. By feeding the raw image through the 💎 **Diamond Medal (`e2e_finetuned`)**, 🥇 **Gold Medal (`regularized_v4`)**, and 🥈 **Silver Medal (`clean_nodropout_v2`)** Heatmap models, we combine networks optimized via joint task feedback, internal regularization, and pure data-centric variance. Extracting the highest-confidence peak from this combined distribution ensures near-perfect document localization regardless of the background environment.
 
 ```
 
