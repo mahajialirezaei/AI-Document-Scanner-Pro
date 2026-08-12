@@ -8,14 +8,16 @@ rectify the image during training, and error flows backward from Enhancement to 
 
 import os
 import cv2
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from typing import Dict, List, Optional, Tuple
-import time
 from pathlib import Path
+import logging
 
+# Disable OpenCV internal multithreading to prevent Deadlocks with PyTorch DataLoader
 cv2.setNumThreads(0)
 
 try:
@@ -30,6 +32,7 @@ from src.models.model import EnhancementUNet, CornerHeatmapModel
 from src.training.losses import EnhancementLoss
 from src.data.data_splitter import get_synthetic_splits
 
+logger = logging.getLogger(__name__)
 
 class SequentialE2ETrainer:
     def __init__(
@@ -60,7 +63,9 @@ class SequentialE2ETrainer:
             lr=lr
         )
         
+        # AMP Scaler restored for speed
         self.scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
+        logger.info(f"SequentialE2ETrainer initialized - Image size: {image_size}, LR: {lr} (Selective AMP Mode)")
     
     def _corners_to_homography(self, pred_corners: torch.Tensor) -> torch.Tensor:
         B = pred_corners.shape[0]
@@ -85,18 +90,33 @@ class SequentialE2ETrainer:
         
         self.optimizer.zero_grad(set_to_none=True)
         
+        # 1. Corner Detection (AMP Float16 for speed)
         with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
             corner_output = self.corner_model(images)
             pred_corners = corner_output[0] if isinstance(corner_output, tuple) else corner_output
-            
-            H = self._corners_to_homography(pred_corners)
-            
-            h, w = self.image_size
-            rectified_crop = warp_perspective(images, H, (h, w))
-            
-            enhanced_output = self.enhancement_model(rectified_crop)
-            loss = self.criterion(enhanced_output, enhancement_targets)
         
+        # 2. Kornia Geometry (Forced Float32 to prevent Overflow)
+        pred_corners_fp32 = pred_corners.float()
+        images_fp32 = images.float()
+        
+        H = self._corners_to_homography(pred_corners_fp32)
+        h, w = self.image_size
+        rectified_crop_fp32 = warp_perspective(images_fp32, H, (h, w))
+        
+        # 3. Enhancement U-Net (AMP Float16 for speed)
+        with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
+            enhanced_output = self.enhancement_model(rectified_crop_fp32)
+            
+        # 4. Loss Calculation (Forced Float32 to prevent Sobel 1e-8 underflow -> NaN)
+        enhanced_output_fp32 = enhanced_output.float()
+        targets_fp32 = enhancement_targets.float()
+        loss = self.criterion(enhanced_output_fp32, targets_fp32)
+        
+        # NaN Guard
+        if torch.isnan(loss) or torch.isinf(loss):
+            logger.warning("NaN/Inf loss detected. Skipping gradient update for this batch.")
+            return 0.0
+            
         self.scaler.scale(loss).backward()
         self.scaler.unscale_(self.optimizer)
         torch.nn.utils.clip_grad_norm_(list(self.enhancement_model.parameters()) + list(self.corner_model.parameters()), max_norm=1.0)
@@ -116,14 +136,23 @@ class SequentialE2ETrainer:
         with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
             corner_output = self.corner_model(images)
             pred_corners = corner_output[0] if isinstance(corner_output, tuple) else corner_output
+        
+        pred_corners_fp32 = pred_corners.float()
+        images_fp32 = images.float()
+        
+        H = self._corners_to_homography(pred_corners_fp32)
+        h, w = self.image_size
+        rectified_crop_fp32 = warp_perspective(images_fp32, H, (h, w))
+        
+        with torch.amp.autocast('cuda', enabled=self.device.type == 'cuda'):
+            enhanced_output = self.enhancement_model(rectified_crop_fp32)
             
-            H = self._corners_to_homography(pred_corners)
+        enhanced_output_fp32 = enhanced_output.float()
+        targets_fp32 = enhancement_targets.float()
+        loss = self.criterion(enhanced_output_fp32, targets_fp32)
             
-            h, w = self.image_size
-            rectified_crop = warp_perspective(images, H, (h, w))
-            
-            enhanced_output = self.enhancement_model(rectified_crop)
-            loss = self.criterion(enhanced_output, enhancement_targets)
+        if torch.isnan(loss) or torch.isinf(loss):
+            return 0.0
             
         return loss.item()
 
@@ -154,6 +183,7 @@ def train_e2e_pipeline(
         # Training Phase
         epoch_train_loss = 0.0
         num_train_batches = 0
+        
         for batch in train_loader:
             images = batch['raw_photo'] if isinstance(batch, dict) else batch[0]
             targets = batch['clean_target'] if isinstance(batch, dict) else batch[1]
@@ -195,9 +225,7 @@ def train_e2e_pipeline(
                     'val_loss': val_loss,
                 }, checkpoint_dir / 'best_model.pth')
         
-        print(f"Epoch {epoch:3d}/{epochs} | "
-              f"Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | "
-              f"LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
+        print(f"Epoch {epoch:3d}/{epochs} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f} | LR: {current_lr:.2e} | Time: {elapsed:.1f}s")
         
         if device.type == 'cuda':
             torch.cuda.empty_cache()
@@ -208,6 +236,7 @@ def train_e2e_pipeline(
 
 if __name__ == '__main__':
     import argparse
+    logging.basicConfig(level=logging.ERROR)
     
     parser = argparse.ArgumentParser(description="End-to-End Joint Fine-tuning (Bonus Phase)")
     parser.add_argument("--clean-scans", type=str, default="data/clean_scans")
@@ -217,14 +246,17 @@ if __name__ == '__main__':
     parser.add_argument("--save-dir", type=str, default="checkpoints/e2e_finetuned")
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-5, help="Low learning rate for fine-tuning")
+    parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--image-size", type=int, default=512)
     
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
     
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True
+        
+    print(f"Using device: {device}")
     os.makedirs(args.save_dir, exist_ok=True)
 
     print("Preparing Synthetic Dataset Splits...")
@@ -234,11 +266,27 @@ if __name__ == '__main__':
         image_size=(args.image_size, args.image_size),
         seed=42,
         num_eval_samples=20, 
-        train_samples_per_epoch=1000
+        train_samples_per_epoch=1000 
     )
     
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    # Restored high-speed DataLoaders
+    train_loader = DataLoader(
+        train_ds, 
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=4, 
+        pin_memory=True, 
+        drop_last=True,
+        prefetch_factor=2,
+    )
+    val_loader = DataLoader(
+        val_ds, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=4, 
+        pin_memory=True,
+        prefetch_factor=2,
+    )
 
     print("Loading pre-trained Gold models...")
     
