@@ -62,7 +62,7 @@ def preprocess_image(image: np.ndarray, input_size: int = 256) -> Tuple[torch.Te
     return tensor, {'original_shape': original_shape, 'input_size': input_size}
 
 def enhance_document(model: torch.nn.Module, rectified_image: np.ndarray, device: str) -> np.ndarray:
-    input_tensor, _ = preprocess_image(rectified_image, input_size=1024)
+    input_tensor, _ = preprocess_image(rectified_image, input_size=512)
     input_tensor = input_tensor.to(device)
     
     with torch.no_grad():
