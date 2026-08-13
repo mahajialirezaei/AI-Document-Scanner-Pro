@@ -97,6 +97,17 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // Reactive Updates in Editor Mode (Live toggles for features)
+    const triggerInteractiveUpdate = () => {
+        if (mode === 'interactive' && !document.getElementById('interactiveResultCard').classList.contains('hidden')) {
+            document.getElementById('enhanceCustomBtn').click();
+        }
+    };
+
+    document.getElementById('applyInkBoost').addEventListener('change', triggerInteractiveUpdate);
+    document.getElementById('applyBinarization').addEventListener('change', triggerInteractiveUpdate);
+    document.getElementById('enhancementMethod').addEventListener('change', triggerInteractiveUpdate);
+
     // Main Process Button Logic (Auto / Interactive)
     processBtn.addEventListener('click', () => {
         if(!rawFile) return;
