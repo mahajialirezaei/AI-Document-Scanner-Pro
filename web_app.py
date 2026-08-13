@@ -23,6 +23,24 @@ pipeline = None
 device = "cuda" if torch.cuda.is_available() else "cpu"
 models_registry = {}
 
+MODEL_PATHS = {
+    "corner_heatmap_clean_nodropout": "checkpoints/corner_heatmap_clean_nodropout/best_model.pth",
+    "corner_heatmap_clean_nodropout_v2": "checkpoints/corner_heatmap_clean_nodropout_v2/best_model.pth",
+    "corner_heatmap_clean_nodropout_v3": "checkpoints/corner_heatmap_clean_nodropout_v3/best_model.pth",
+    "corner_heatmap_clean_nodropout_v4": "checkpoints/corner_heatmap_clean_nodropout_v4/best_model.pth",
+    "corner_heatmap_regularized": "checkpoints/corner_heatmap_regularized/best_model.pth",
+    "corner_heatmap_regularized_v2": "checkpoints/corner_heatmap_regularized_v2/best_model.pth",
+    "corner_heatmap_regularized_v3": "checkpoints/corner_heatmap_regularized_v3/best_model.pth",
+    "corner_heatmap_regularized_v4": "checkpoints/corner_heatmap_regularized_v4/best_model.pth",
+    "corner_regression_clean_nodropout": "checkpoints/corner_regression_clean_nodropout/best_model.pth",
+    "corner_regression_regularized": "checkpoints/corner_regression_regularized/best_model.pth",
+    "e2e_finetuned": "checkpoints/e2e_finetuned/best_model.pth",
+    "enhancement_clean_nodropout": "checkpoints/enhancement_clean_nodropout/best_model.pth",
+    "enhancement_clean_nodropout_v2": "checkpoints/enhancement_clean_nodropout_v2/best_model.pth",
+    "enhancement_regularized": "checkpoints/enhancement_regularized/best_model.pth",
+    "enhancement_regularized_v2": "checkpoints/enhancement_regularized_v2/best_model.pth",
+}
+
 @app.on_event("startup")
 async def startup_event():
     global pipeline, models_registry
@@ -53,6 +71,44 @@ async def root():
     return FileResponse("static/index.html")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/data", StaticFiles(directory="data"), name="data")
+
+@app.post("/api/evaluate/batch")
+async def evaluate_batch(
+    dataset_type: str = Form(...),
+    corner_model: str = Form(""),
+    enhancement_model: str = Form(...),
+    use_gt_corners: str = Form("false")
+):
+    from evaluate import run_evaluation_pipeline
+    use_gt = use_gt_corners.lower() == 'true'
+    
+    c_path = MODEL_PATHS.get(corner_model, "") if not use_gt else ""
+    e_path = MODEL_PATHS.get(enhancement_model, "")
+    
+    if not e_path:
+        raise HTTPException(status_code=400, detail="Invalid enhancement model selected.")
+    if not use_gt and not c_path:
+        raise HTTPException(status_code=400, detail="Invalid corner model selected.")
+        
+    task = "corner_regression" if "regression" in corner_model else "corner_heatmap"
+    
+    try:
+        results = run_evaluation_pipeline(
+            dataset_type=dataset_type,
+            task=task,
+            corner_ckpt=c_path,
+            enhancement_ckpt=e_path,
+            use_gt_corners=use_gt
+        )
+        if results["best_image_path"]:
+            results["best_image_url"] = "/" + results["best_image_path"].replace("\\", "/")
+        else:
+            results["best_image_url"] = ""
+            
+        return JSONResponse(content=results)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/scan")
 async def scan_document(
