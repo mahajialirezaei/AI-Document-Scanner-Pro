@@ -10,7 +10,7 @@
     <div class="container">
         <header>
             <h1>📄 AI Document Scanner Pro</h1>
-            <p class="subtitle">Ensemble Detection, Interactive Editing & PDF Export</p>
+            <p class="subtitle">Ensemble Detection, Interactive Editing, PDF Export & Evaluation Dashboard</p>
         </header>
 
         <main>
@@ -18,10 +18,11 @@
             <div class="tabs">
                 <button class="tab-btn active" id="tabAuto">Auto Mode (Image / PDF)</button>
                 <button class="tab-btn" id="tabInteractive">Interactive Mode (Editor)</button>
+                <button class="tab-btn" id="tabEval">📊 Evaluation Dashboard</button>
             </div>
 
-            <!-- Controls Panel -->
-            <section class="controls-section">
+            <!-- ===================== AUTO & INTERACTIVE CONTROLS ===================== -->
+            <section id="inferenceControls" class="controls-section">
                 <div class="control-group">
                     <label>🎯 Corner Detection Model</label>
                     <select id="cornerMethod">
@@ -61,8 +62,8 @@
                 </div>
             </section>
 
-            <!-- Upload Section -->
-            <section class="upload-section">
+            <!-- ===================== UPLOAD SECTION (AUTO MODE) ===================== -->
+            <section id="uploadSection" class="upload-section">
                 <div class="upload-grid">
                     <div id="dropzoneRaw" class="dropzone">
                         <div class="dropzone-content">
@@ -71,7 +72,7 @@
                         <input type="file" id="fileRaw" accept="image/*,application/pdf" hidden>
                     </div>
                     
-                    <div id="dropzoneRef" class="dropzone secondary" id="refUploadContainer">
+                    <div id="dropzoneRef" class="dropzone secondary">
                         <div class="dropzone-content">
                             <p class="dropzone-text">🎯 Upload <strong>GT Clean Scan</strong></p>
                             <p class="dropzone-hint">(Optional: For PSNR/SSIM)</p>
@@ -85,11 +86,11 @@
                 </div>
             </section>
 
+            <!-- GLOBAL LOADING SPINNER -->
             <div id="loading" class="loading hidden">
-                <div class="spinner"></div><p>Executing Neural Networks...</p>
+                <div class="spinner"></div><p id="loadingText">Executing Neural Networks...</p>
             </div>
 
-            <!-- Auto Mode Results -->
             <div id="autoView">
                 <section id="metricsPanel" class="metrics-section hidden">
                     <div class="metric-card"><div class="metric-title">PSNR</div><div id="m-psnr" class="metric-val">-</div></div>
@@ -113,7 +114,7 @@
                 </section>
             </div>
 
-            <!-- Interactive Mode Results -->
+            <!-- ===================== INTERACTIVE MODE RESULTS ===================== -->
             <div id="interactiveView" class="hidden">
                 <div class="interactive-grid">
                     <div class="canvas-container">
@@ -124,6 +125,83 @@
                     <div class="image-card hidden" id="interactiveResultCard">
                         <h3>Enhanced Result</h3>
                         <div class="image-container"><img id="interactiveEnhancedImage"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===================== EVALUATION DASHBOARD VIEW ===================== -->
+            <div id="evalView" class="hidden">
+                <section class="controls-section" style="background: #f8f9fa; border: 2px solid #e9ecef;">
+                    <div class="control-group">
+                        <label>📂 Dataset Type</label>
+                        <select id="evalDataset">
+                            <option value="synthetic">Synthetic Data (Measures PSNR/SSIM)</option>
+                            <option value="real">Real Photos (Measures OCR/MLE)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label>🎯 Corner Model (Full Registry)</label>
+                        <select id="evalCornerMethod">
+                            <option value="gt">✅ Bypass: Use Ground Truth Corners</option>
+                            <option disabled>── Heatmap Models ──</option>
+                            <option value="e2e_finetuned">Heatmap E2E Finetuned 💎</option>
+                            <option value="corner_heatmap_regularized_v4">Heatmap Reg v4 (Gold) 🥇</option>
+                            <option value="corner_heatmap_clean_nodropout_v3">Heatmap Clean v3 (Silver) 🥈</option>
+                            <option value="corner_heatmap_clean_nodropout_v2">Heatmap Clean v2 (Bronze) 🥉</option>
+                            <option value="corner_heatmap_regularized_v2">Heatmap Reg v2 (Geometry Collapse)</option>
+                            <option value="corner_heatmap_clean_nodropout_v4">Heatmap Clean v4 (Overfitting)</option>
+                            <option value="corner_heatmap_regularized_v3">Heatmap Reg v3</option>
+                            <option value="corner_heatmap_regularized">Heatmap Reg v1</option>
+                            <option value="corner_heatmap_clean_nodropout">Heatmap Clean v1</option>
+                            <option disabled>── Regression Models ──</option>
+                            <option value="corner_regression_clean_nodropout">Regression Baseline</option>
+                            <option value="corner_regression_regularized">Regression Regularized</option>
+                        </select>
+                    </div>
+
+                    <div class="control-group">
+                        <label>✨ Enhancement Model (Full Registry)</label>
+                        <select id="evalEnhancementMethod">
+                            <option value="enhancement_regularized_v2">Enhancement Reg v2 (Gold) 🥇</option>
+                            <option value="enhancement_clean_nodropout_v2">Enhancement Clean v2 (Silver) 🥈</option>
+                            <option value="e2e_finetuned">Enhancement E2E (Bonus)</option>
+                            <option value="enhancement_clean_nodropout">Enhancement Clean v1 (Bronze) 🥉</option>
+                            <option value="enhancement_regularized">Enhancement Reg v1</option>
+                        </select>
+                    </div>
+
+                    <div class="actions" style="margin-top: 10px; width: 100%;">
+                        <button id="runEvalBtn" class="btn-primary" style="background-color: #8e44ad;">🚀 Run Batch Evaluation</button>
+                    </div>
+                </section>
+
+                <div id="evalResultsPanel" class="hidden">
+                    <h3 style="text-align: center; margin-bottom: 1.5rem; color: #2c3e50;">
+                        Evaluation Results (<span id="evalTotalSamples">0</span> Samples Processed)
+                    </h3>
+                    
+                    <section class="metrics-section">
+                        <!-- Geometry -->
+                        <div class="metric-card"><div class="metric-title">MLE (Euclidean)</div><div id="eval-mle" class="metric-val">-</div></div>
+                        <div class="metric-card"><div class="metric-title">MAE (Corner)</div><div id="eval-mae" class="metric-val">-</div></div>
+                        <div class="metric-card"><div class="metric-title">MSE (Corner)</div><div id="eval-mse" class="metric-val">-</div></div>
+                        
+                        <!-- Math -->
+                        <div class="metric-card"><div class="metric-title">Avg PSNR</div><div id="eval-psnr" class="metric-val highlight">-</div></div>
+                        <div class="metric-card"><div class="metric-title">Avg SSIM</div><div id="eval-ssim" class="metric-val">-</div></div>
+                        
+                        <!-- Functional -->
+                        <div class="metric-card"><div class="metric-title">Raw OCR</div><div id="eval-ocr-raw" class="metric-val">-</div></div>
+                        <div class="metric-card"><div class="metric-title">Enh OCR</div><div id="eval-ocr-enh" class="metric-val highlight">-</div></div>
+                        <div class="metric-card"><div class="metric-title">Target OCR</div><div id="eval-ocr-tgt" class="metric-val">-</div></div>
+                    </section>
+                    
+                    <div class="image-card" style="margin-top: 2rem;">
+                        <h3 style="background-color: #8e44ad;">🌟 Best Result Showcase</h3>
+                        <div class="image-container" style="background: #ecf0f1;">
+                            <img id="evalBestImage" style="max-height: 800px; object-fit: contain;">
+                        </div>
                     </div>
                 </div>
             </div>

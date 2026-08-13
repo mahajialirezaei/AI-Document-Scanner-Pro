@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', function() {
-    let mode = 'auto'; // 'auto' or 'interactive'
+    let mode = 'auto'; // 'auto', 'interactive', 'eval'
     
     const fileRaw = document.getElementById('fileRaw');
     const fileRef = document.getElementById('fileRef');
@@ -10,8 +10,16 @@ document.addEventListener('DOMContentLoaded', function() {
     // Tabs
     const tabAuto = document.getElementById('tabAuto');
     const tabInteractive = document.getElementById('tabInteractive');
+    const tabEval = document.getElementById('tabEval');
+    
+    // Views
     const autoView = document.getElementById('autoView');
     const interactiveView = document.getElementById('interactiveView');
+    const evalView = document.getElementById('evalView');
+    
+    // Control Sections
+    const inferenceControls = document.getElementById('inferenceControls');
+    const uploadSection = document.getElementById('uploadSection');
     const dropzoneRefContainer = document.getElementById('dropzoneRef');
 
     let rawFile = null;
@@ -21,7 +29,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const canvas = document.getElementById('editorCanvas');
     const ctx = canvas.getContext('2d');
     let imgObj = new Image();
-    let cornersNorm = []; // Normalized corners [0..1]
+    let cornersNorm = []; 
     let draggingPoint = -1;
 
     // Tab Switching Logic
@@ -29,8 +37,14 @@ document.addEventListener('DOMContentLoaded', function() {
         mode = 'auto';
         tabAuto.classList.add('active');
         tabInteractive.classList.remove('active');
+        tabEval.classList.remove('active');
+        
         autoView.classList.remove('hidden');
         interactiveView.classList.add('hidden');
+        evalView.classList.add('hidden');
+        
+        inferenceControls.classList.remove('hidden');
+        uploadSection.classList.remove('hidden');
         dropzoneRefContainer.classList.remove('hidden');
         processBtn.innerText = "Start Auto Processing";
     });
@@ -39,10 +53,30 @@ document.addEventListener('DOMContentLoaded', function() {
         mode = 'interactive';
         tabInteractive.classList.add('active');
         tabAuto.classList.remove('active');
+        tabEval.classList.remove('active');
+        
         interactiveView.classList.remove('hidden');
         autoView.classList.add('hidden');
+        evalView.classList.add('hidden');
+        
+        inferenceControls.classList.remove('hidden');
+        uploadSection.classList.remove('hidden');
         dropzoneRefContainer.classList.add('hidden');
         processBtn.innerText = "Detect Corners for Editor";
+    });
+
+    tabEval.addEventListener('click', () => {
+        mode = 'eval';
+        tabEval.classList.add('active');
+        tabAuto.classList.remove('active');
+        tabInteractive.classList.remove('active');
+        
+        evalView.classList.remove('hidden');
+        autoView.classList.add('hidden');
+        interactiveView.classList.add('hidden');
+        
+        inferenceControls.classList.add('hidden');
+        uploadSection.classList.add('hidden');
     });
 
     dropzoneRaw.addEventListener('click', () => fileRaw.click());
@@ -63,12 +97,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // Main Process Button Logic
+    // Main Process Button Logic (Auto / Interactive)
     processBtn.addEventListener('click', () => {
         if(!rawFile) return;
         
         document.getElementById('error').classList.add('hidden');
         document.getElementById('loading').classList.remove('hidden');
+        document.getElementById('loadingText').innerText = "Executing Neural Networks...";
 
         const formData = new FormData();
         formData.append('file', rawFile);
@@ -124,13 +159,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 handleError({detail: "Interactive mode only supports images."});
                 return;
             }
-            // Load image to canvas
             const url = URL.createObjectURL(rawFile);
             imgObj.onload = () => {
                 canvas.width = imgObj.width > 800 ? 800 : imgObj.width;
                 canvas.height = (imgObj.height / imgObj.width) * canvas.width;
                 
-                // Fetch initial corners from API
                 fetch('/interactive-detect', { method: 'POST', body: formData })
                 .then(res => res.json().then(data => res.ok ? data : Promise.reject(data)))
                 .then(data => {
@@ -142,6 +175,59 @@ document.addEventListener('DOMContentLoaded', function() {
             };
             imgObj.src = url;
         }
+    });
+
+    // Batch Evaluation Logic
+    document.getElementById('runEvalBtn').addEventListener('click', () => {
+        document.getElementById('error').classList.add('hidden');
+        document.getElementById('loading').classList.remove('hidden');
+        document.getElementById('loadingText').innerText = "Processing Batch Images. This may take a few minutes...";
+        document.getElementById('evalResultsPanel').classList.add('hidden');
+
+        const formData = new FormData();
+        formData.append('dataset_type', document.getElementById('evalDataset').value);
+        
+        const cornerVal = document.getElementById('evalCornerMethod').value;
+        if (cornerVal === 'gt') {
+            formData.append('use_gt_corners', 'true');
+            formData.append('corner_model', '');
+        } else {
+            formData.append('use_gt_corners', 'false');
+            formData.append('corner_model', cornerVal);
+        }
+        
+        formData.append('enhancement_model', document.getElementById('evalEnhancementMethod').value);
+
+        fetch('/api/evaluate/batch', { method: 'POST', body: formData })
+        .then(res => res.json().then(data => res.ok ? data : Promise.reject(data)))
+        .then(data => {
+            document.getElementById('loading').classList.add('hidden');
+            
+            const m = data.metrics;
+            document.getElementById('evalTotalSamples').innerText = data.total_samples;
+            
+            document.getElementById('eval-mle').innerText = m.corner_mle ? `${m.corner_mle.toFixed(2)} px` : 'N/A';
+            document.getElementById('eval-mae').innerText = m.corner_mae ? `${m.corner_mae.toFixed(2)} px` : 'N/A';
+            document.getElementById('eval-mse').innerText = m.corner_mse ? `${m.corner_mse.toFixed(2)} px²` : 'N/A';
+            
+            document.getElementById('eval-psnr').innerText = m.psnr ? `${m.psnr.toFixed(2)} dB` : 'N/A';
+            document.getElementById('eval-ssim').innerText = m.ssim ? m.ssim.toFixed(4) : 'N/A';
+            
+            document.getElementById('eval-ocr-raw').innerText = m.ocr_deg ? `${m.ocr_deg.toFixed(1)}%` : 'N/A';
+            document.getElementById('eval-ocr-enh').innerText = m.ocr_enh ? `${m.ocr_enh.toFixed(1)}%` : 'N/A';
+            document.getElementById('eval-ocr-tgt').innerText = m.ocr_tgt ? `${m.ocr_tgt.toFixed(1)}%` : 'N/A';
+            
+            const bestImageEl = document.getElementById('evalBestImage');
+            if(data.best_image_url) {
+                bestImageEl.src = data.best_image_url + "?t=" + new Date().getTime(); // Bypass browser cache
+                bestImageEl.parentElement.parentElement.classList.remove('hidden');
+            } else {
+                bestImageEl.parentElement.parentElement.classList.add('hidden');
+            }
+            
+            document.getElementById('evalResultsPanel').classList.remove('hidden');
+        })
+        .catch(handleError);
     });
 
     // Canvas Logic
@@ -174,17 +260,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
     canvas.addEventListener('mousedown', (e) => {
         const rect = canvas.getBoundingClientRect();
-        
         const scaleX = canvas.width / rect.width;
         const scaleY = canvas.height / rect.height;
-
         const mouseX = (e.clientX - rect.left) * scaleX;
         const mouseY = (e.clientY - rect.top) * scaleY;
 
         for (let i = 0; i < cornersNorm.length; i++) {
             const ptX = cornersNorm[i][0] * canvas.width;
             const ptY = cornersNorm[i][1] * canvas.height;
-            
             if (Math.hypot(mouseX - ptX, mouseY - ptY) < 25) {
                 draggingPoint = i;
                 break;
@@ -195,7 +278,6 @@ document.addEventListener('DOMContentLoaded', function() {
     canvas.addEventListener('mousemove', (e) => {
         if (draggingPoint === -1) return;
         const rect = canvas.getBoundingClientRect();
-        
         const x = (e.clientX - rect.left) / rect.width;
         const y = (e.clientY - rect.top) / rect.height;
 
@@ -210,6 +292,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Interactive Enhance Submit
     document.getElementById('enhanceCustomBtn').addEventListener('click', () => {
         document.getElementById('loading').classList.remove('hidden');
+        document.getElementById('loadingText').innerText = "Enhancing custom crop...";
         document.getElementById('interactiveResultCard').classList.add('hidden');
 
         const formData = new FormData();
