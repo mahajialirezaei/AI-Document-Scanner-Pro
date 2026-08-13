@@ -47,7 +47,7 @@ def load_model(model_type: str, checkpoint_path: str, device: str = "cuda" if to
 
 def preprocess_image(image: np.ndarray, input_size: int = 256) -> Tuple[torch.Tensor, Dict]:
     original_shape = image.shape[:2]
-    resized = cv2.resize(image, (input_size, input_size), interpolation=cv2.INTER_LINEAR)
+    resized = cv2.resize(image, (input_size, input_size), interpolation=cv2.INTER_AREA)
     
     if len(resized.shape) == 2:
         resized = cv2.cvtColor(resized, cv2.COLOR_GRAY2RGB)
@@ -72,7 +72,7 @@ def enhance_document(model: torch.nn.Module, rectified_image: np.ndarray, device
     output_bgr = cv2.cvtColor((output_np * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
     
     if output_bgr.shape[:2] != rectified_image.shape[:2]:
-        output_bgr = cv2.resize(output_bgr, (rectified_image.shape[1], rectified_image.shape[0]))
+        output_bgr = cv2.resize(output_bgr, (rectified_image.shape[1], rectified_image.shape[0]), interpolation=cv2.INTER_CUBIC)
         
     return output_bgr
 
@@ -124,7 +124,8 @@ def detect_corners_heatmap(model: torch.nn.Module, raw_image: np.ndarray, device
     with torch.no_grad():
         output = model(input_tensor.to(device))
         
-    heatmaps_np = np.squeeze((output[1] if isinstance(output, tuple) else output).detach().cpu().numpy())
+    heatmaps_np = np.squeeze((output[1] if isinstance(output, tuple) else output).detach().cpu().numpy()).astype(np.float32)
+    
     if heatmaps_np.ndim == 3 and heatmaps_np.shape[-1] == 4 and heatmaps_np.shape[0] != 4:
         heatmaps_np = np.transpose(heatmaps_np, (2, 0, 1))
 
@@ -325,10 +326,9 @@ def is_already_cropped(image: np.ndarray, variance_thresh: float = 800.0, white_
             
     return bool(valid_edges >= 3)
 
-def is_already_enhanced(image: np.ndarray, white_thresh: int = 240, mass_threshold: float = 0.40) -> bool:
+def is_already_enhanced(image: np.ndarray, white_thresh: int = 240, mass_threshold: float = 0.85) -> bool:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
     white_mass_ratio = np.sum(gray > white_thresh) / gray.size
-    
     return bool(white_mass_ratio > mass_threshold)
 
 class DocumentScanningPipeline:
