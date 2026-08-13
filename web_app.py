@@ -11,11 +11,12 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, Response
 
+# FIXED: Added detect_corners_regression to the import list
 from src.pipelines.inference import (
     DocumentScanningPipeline, load_model, apply_perspective_transform, 
     enhance_document, apply_adaptive_binarization, apply_ink_boost_filter,
     is_already_cropped, is_already_enhanced, detect_corners_ensemble, 
-    detect_corners_heatmap, order_corners
+    detect_corners_heatmap, detect_corners_regression, order_corners
 )
 
 app = FastAPI(title="Document Scanner & Enhancer API")
@@ -209,6 +210,9 @@ async def interactive_detect(
                 models_registry["heatmap_v2"]
             ]
             corners = detect_corners_ensemble(models_to_ensemble, raw_image, device)
+        # FIXED: Ensure regression models are routed correctly to prevent OpenCV GaussianBlur crash
+        elif "regression" in corner_method:
+            corners, _ = detect_corners_regression(models_registry[corner_method], raw_image, device=device)
         else:
             corners, _, _ = detect_corners_heatmap(models_registry[corner_method], raw_image, device)
             
