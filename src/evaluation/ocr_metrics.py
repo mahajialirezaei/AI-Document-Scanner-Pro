@@ -7,30 +7,26 @@ Integrates with Tesseract OCR engine to evaluate text readability improvements.
 
 from typing import Dict, Optional, Tuple
 import numpy as np
-
+import os
 
 def compute_ocr_metrics(image: np.ndarray, lang: str = 'eng') -> Dict:
     """
     Compute OCR metrics for a single image.
-    
-    Args:
-        image: Input image (H, W, C) in range [0, 255] or [0, 1]
-        lang: Tesseract language code
-        
-    Returns:
-        Dictionary with OCR confidence and word count
     """
     try:
         import pytesseract
+        pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+        os.environ['TESSDATA_PREFIX'] = r'C:\Program Files\Tesseract-OCR\tessdata'
     except ImportError:
         print("Warning: pytesseract not installed.")
         return {'confidence': 0.0, 'word_count': 0, 'available': False}
+    except Exception as e:
+        print(f"Warning: Tesseract configuration error: {e}")
+        return {'confidence': 0.0, 'word_count': 0, 'available': False}
     
-    # Ensure proper format
     if image.dtype != np.uint8:
         image = np.clip(image * 255, 0, 255).astype(np.uint8)
     
-    # Get OCR data
     data = pytesseract.image_to_data(image, lang=lang, 
                                       output_type=pytesseract.Output.DICT)
     
@@ -44,21 +40,11 @@ def compute_ocr_metrics(image: np.ndarray, lang: str = 'eng') -> Dict:
         'available': True
     }
 
-
 def compare_readability(degraded: np.ndarray, enhanced: np.ndarray,
                         reference: Optional[np.ndarray] = None,
                         lang: str = 'eng') -> Dict:
     """
     Compare readability between degraded and enhanced images.
-    
-    Args:
-        degraded: Degraded input image
-        enhanced: Enhanced output image
-        reference: Optional clean reference scan
-        lang: Tesseract language code
-        
-    Returns:
-        Dictionary with comparative metrics
     """
     degraded_result = compute_ocr_metrics(degraded, lang)
     enhanced_result = compute_ocr_metrics(enhanced, lang)

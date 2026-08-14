@@ -2,6 +2,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+def init_weights(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.BatchNorm2d):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+        
 class DoubleConv(nn.Module):
     """(convolution => [BN] => ReLU) * 2"""
     def __init__(self, in_channels, out_channels, mid_channels=None, dropout_rate=0.0):
@@ -65,23 +74,28 @@ class OutConv(nn.Module):
         return self.conv(x)
 
 class EnhancementUNet(nn.Module):
-    """Task 1: Enhancement (U-Net)"""
+    """Task 1: Enhancement (U-Net) with Selective Regularization"""
     def __init__(self, n_channels=3, n_classes=3, bilinear=False, dropout_rate=0.0):
         super(EnhancementUNet, self).__init__()
         self.n_channels = n_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
 
-        self.inc = DoubleConv(n_channels, 64, dropout_rate=dropout_rate)
-        self.down1 = Down(64, 128, dropout_rate=dropout_rate)
-        self.down2 = Down(128, 256, dropout_rate=dropout_rate)
+        # Early layers: No dropout to preserve low-level features and geometric structure
+        self.inc = DoubleConv(n_channels, 64, dropout_rate=0.0)
+        self.down1 = Down(64, 128, dropout_rate=0.0)
+        self.down2 = Down(128, 256, dropout_rate=0.0)
+        
+        # Deep layers / Bottleneck: Apply dropout for semantic regularization
         self.down3 = Down(256, 512, dropout_rate=dropout_rate)
         factor = 2 if bilinear else 1
         self.down4 = Down(512, 1024 // factor, dropout_rate=dropout_rate)
         self.up1 = Up(1024, 512 // factor, bilinear, dropout_rate=dropout_rate)
-        self.up2 = Up(512, 256 // factor, bilinear, dropout_rate=dropout_rate)
-        self.up3 = Up(256, 128 // factor, bilinear, dropout_rate=dropout_rate)
-        self.up4 = Up(128, 64, bilinear, dropout_rate=dropout_rate)
+        
+        # Late layers: No dropout
+        self.up2 = Up(512, 256 // factor, bilinear, dropout_rate=0.0)
+        self.up3 = Up(256, 128 // factor, bilinear, dropout_rate=0.0)
+        self.up4 = Up(128, 64, bilinear, dropout_rate=0.0)
         self.outc = OutConv(64, n_classes)
         self.sigmoid = nn.Sigmoid()
 
@@ -129,7 +143,7 @@ class CornerRegressionModel(nn.Module):
             nn.ReLU(inplace=True),
             nn.Dropout(dropout_rate),
             nn.Linear(256, 8),
-            nn.Sigmoid() # Normalized coordinates [0, 1]
+            nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -139,9 +153,10 @@ class CornerRegressionModel(nn.Module):
         return x
 
 class SoftArgmax2D(nn.Module):
-    def __init__(self, beta=100.0):
+    def __init__(self, train_beta=300.0, eval_beta=10000.0):
         super(SoftArgmax2D, self).__init__()
-        self.beta = beta
+        self.train_beta = train_beta
+        self.eval_beta = eval_beta
 
     def forward(self, x):
         """
@@ -152,33 +167,63 @@ class SoftArgmax2D(nn.Module):
         """
         B, C, H, W = x.size()
         x_flat = x.view(B, C, -1)
-        weights = F.softmax(self.beta * x_flat, dim=-1)
+        
+        current_beta = self.train_beta if self.training else self.eval_beta
+        
+        x_flat_max, _ = torch.max(x_flat, dim=-1, keepdim=True)
+        weights = F.softmax(current_beta * (x_flat - x_flat_max), dim=-1)
         
         indices = torch.arange(H * W).to(x.device).float()
         idx_y = indices // W
         idx_x = indices % W
         
-        # Expected values
-        # We use H-1 and W-1 to normalize to [0, 1] range if H, W > 1
         expected_y = (weights * idx_y).sum(dim=-1) / max(1, H - 1)
         expected_x = (weights * idx_x).sum(dim=-1) / max(1, W - 1)
         
         return torch.stack([expected_x, expected_y], dim=-1)
 
+class AddCoords(nn.Module):
+    def __init__(self, with_r=False):
+        super().__init__()
+        self.with_r = with_r
+
+    def forward(self, input_tensor):
+        batch_size, _, y_dim, x_dim = input_tensor.size()
+
+        xx_channel = torch.arange(x_dim).repeat(1, y_dim, 1)
+        yy_channel = torch.arange(y_dim).repeat(1, x_dim, 1).transpose(1, 2)
+
+        xx_channel = xx_channel.float() / (x_dim - 1)
+        yy_channel = yy_channel.float() / (y_dim - 1)
+
+        xx_channel = xx_channel * 2 - 1
+        yy_channel = yy_channel * 2 - 1
+
+        xx_channel = xx_channel.repeat(batch_size, 1, 1, 1).transpose(2, 3)
+        yy_channel = yy_channel.repeat(batch_size, 1, 1, 1).transpose(2, 3)
+
+        xx_channel = xx_channel.to(input_tensor.device)
+        yy_channel = yy_channel.to(input_tensor.device)
+
+        ret = torch.cat([input_tensor, xx_channel, yy_channel], dim=1)
+
+        if self.with_r:
+            rr = torch.sqrt(torch.pow(xx_channel - 0.5, 2) + torch.pow(yy_channel - 0.5, 2))
+            ret = torch.cat([ret, rr], dim=1)
+
+        return ret
+
 class CornerHeatmapModel(nn.Module):
-    """Task 2: Corner Approach B - Heatmap"""
+    """Task 2: Corner Approach B - Heatmap (With CoordConv)"""
     def __init__(self, n_channels=3, n_classes=4, bilinear=False, dropout_rate=0.0):
         super(CornerHeatmapModel, self).__init__()
-        # Using a U-Net backbone to predict 4 Gaussian heatmaps
-        self.unet = EnhancementUNet(n_channels, n_classes, bilinear, dropout_rate)
-        # Note: EnhancementUNet ends with Sigmoid, which is fine for heatmaps.
-        # If raw logits are preferred for SoftArgmax, we could modify it.
-        # But SoftArgmax typically works on any positive activations or logits.
+        self.addcoords = AddCoords(with_r=False)
+        self.unet = EnhancementUNet(n_channels + 2, n_classes, bilinear, dropout_rate)
         self.soft_argmax = SoftArgmax2D()
 
     def forward(self, x):
-        heatmaps = self.unet(x) # (B, 4, H, W)
-        coords = self.soft_argmax(heatmaps) # (B, 4, 2)
-        # Reshape coords to (B, 8) to match Approach A for easier comparison if needed
+        x_with_coords = self.addcoords(x) 
+        heatmaps = self.unet(x_with_coords) 
+        coords = self.soft_argmax(heatmaps) 
         coords = coords.view(coords.size(0), -1)
         return coords, heatmaps

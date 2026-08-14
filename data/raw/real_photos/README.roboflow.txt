@@ -1,8 +1,8 @@
 
-Doc-Scanning-And-Enhancement - v1 2026-07-31 2:42am
+DocumentCornerDetection-Polygon - v1 mahajialirezaei-polygon
 ==============================
 
-This dataset was exported via roboflow.com on July 30, 2026 at 11:12 PM GMT
+This dataset was exported via roboflow.com on August 2, 2026 at 8:33 AM GMT
 
 Roboflow is an end-to-end computer vision platform that helps you
 * collaborate with your team on computer vision projects
@@ -17,8 +17,8 @@ visit https://github.com/roboflow/notebooks
 
 To find over 100k other datasets and pre-trained models, visit https://universe.roboflow.com
 
-The dataset includes 15 images.
-Doc-Scanning-And-Enhancement are annotated in COCO format.
+The dataset includes 23 images.
+DocumentCornerDetection-Polygon are annotated in COCO format.
 
 The following pre-processing was applied to each image:
 
