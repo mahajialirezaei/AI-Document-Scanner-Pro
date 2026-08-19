@@ -66,8 +66,8 @@ A dedicated evaluation dashboard facilitates batch processing and rigorous bench
 
 ### Step 1: Clone Repository
 ```bash
-git clone [https://github.com/mahajialirezaei/CNN-Applications-Doc-Scanning-And-Enhancement.git](https://github.com/mahajialirezaei/CNN-Applications-Doc-Scanning-And-Enhancement.git)
-cd CNN-Applications-Doc-Scanning-And-Enhancement
+git clone https://github.com/mahajialirezaei/AI-Document-Scanner-Pro.git
+cd AI-Document-Scanner-Pro
 
 ```
 
@@ -322,7 +322,7 @@ Definitive experiments highlight the trade-off between geometric mathematical fi
 ## 📁 Project Structure
 
 ```text
-CNN-Applications-Doc-Scanning-And-Enhancement/
+AI-Document-Scanner-Pro/
 ├── demo.py                   # 🎯 Interactive CLI Demo & Batch Processor
 ├── evaluate.py               # 📊 Unified Evaluation Script (Synthetic & Real)
 ├── web_app.py                # 🌐 FastAPI Production Server
@@ -362,7 +362,4 @@ CNN-Applications-Doc-Scanning-And-Enhancement/
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-```
-
 ```
