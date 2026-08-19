@@ -1,20 +1,48 @@
-# CNN Document Scanning & Enhancement System
+# AI Document Scanner Pro
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-1.9+-ee4c2c?logo=pytorch)](https://pytorch.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A complete deep learning pipeline for automatic document scanning and enhancement from unconstrained smartphone photos. This system performs intelligent corner detection, dynamic perspective correction, and U-Net-based image enhancement to transform casual, degraded document photos into professional, high-fidelity scans.
+## Abstract
+This repository presents a comprehensive deep learning pipeline engineered for the automatic rectification and photometric restoration of document images captured via unconstrained smartphone cameras. The system integrates advanced spatial localization networks (Corner Detection) with a U-Net-based image restoration architecture (Enhancement). By leveraging a zero-annotation synthetic data generation pipeline, the models are trained to be robust against complex, real-world photometric and geometric distortions, effectively transforming degraded inputs into high-fidelity, mathematically restored document scans.
 
-## 🌟 Key Features
+---
 
-- **Advanced Corner Detection**: Heatmap regression with Sub-pixel precision (SoftArgmax) and Scheduled Bottleneck Regularization.
-- **Smart Ensemble 3.0**: Projective geometry heuristics and physical symmetry rules to prevent reward hacking during corner detection.
-- **Out-Of-Distribution (OOD) Gatekeepers**: Statistical border variance and histogram analysis to gracefully handle pre-cropped or pre-scanned inputs.
-- **Dynamic Perspective Correction**: GPU-accelerated differentiable warping using Kornia, maintaining natural aspect ratios via Euclidean bounds.
-- **Zero-Annotation Synthetic Pipeline**: 10+ geometric and photometric degradations (e.g., 3D paper curl, cylindrical open-book warp, drop shadows) for purely data-driven training.
-- **Production UI & PDF Engine**: FastAPI backend with an HTML5 interactive canvas, multi-page PDF reconstruction (`PyMuPDF`), and "Magic Ink Boost" post-processing.
+## 🌟 Key Methodological Features
+
+- **Sub-Pixel Corner Localization**: Utilizes heatmap regression coupled with a differentiable SoftArgmax layer and scheduled bottleneck regularization for precise geometric prediction.
+- **Projective Smart Ensemble 3.0**: Incorporates projective geometry heuristics, convexity constraints, and physical symmetry rules to aggressively filter and aggregate predictions, preventing reward hacking during corner localization.
+- **Out-Of-Distribution (OOD) Gatekeepers**: Employs statistical border variance and histogram distribution analysis to dynamically bypass the enhancement phase for pre-cropped or natively digital scans.
+- **Differentiable Perspective Correction**: Integrates GPU-accelerated differentiable warping (via Kornia) to maintain natural aspect ratios utilizing Euclidean bounds.
+- **Zero-Annotation Synthetic Generation Pipeline**: A purely data-driven augmentation engine simulating 10+ complex real-world degradations, including 3D non-linear paper curl (Elastic Transform), cylindrical open-book warping, and localized illumination gradients.
+
+---
+
+## 🖥️ System Interface & Visualization
+
+The project features a production-ready FastAPI backend paired with an interactive HTML5 canvas, designed to demonstrate the pipeline's capabilities in both automated and manual modes, alongside a comprehensive evaluation suite.
+
+### Production UI & Architecture Selection
+The interface provides granular control over the inference pipeline, allowing the selection of specialized models based on the required trade-off between geometric mathematical fidelity and semantic human readability.
+
+![System Interface](docs/imgs/ui1.jpg)
+
+### Automated Pipeline (Inference)
+In Auto Mode, the system independently executes the full differentiable chain: identifying document boundaries, executing perspective transformation, and applying the restorative U-Net model.
+
+![Automated Inference Results](docs/imgs/ui2.jpg)
+
+### Interactive Editor Mode
+The Interactive Mode introduces a human-in-the-loop paradigm, enabling users to manually refine predicted corners via an interactive canvas before applying the non-linear photometric enhancement.
+
+![Interactive Corner Editing](docs/imgs/ui3.jpg)
+
+### Comprehensive Evaluation Dashboard
+A dedicated evaluation dashboard facilitates batch processing and rigorous benchmarking across mathematical (PSNR, SSIM, MLE) and functional OCR metrics, dynamically showcasing the optimal results.
+
+![Evaluation Dashboard](docs/imgs/ui4.jpg)
 
 ---
 
@@ -25,9 +53,8 @@ A complete deep learning pipeline for automatic document scanning and enhancemen
 3. [Usage: Inference & Demo](#-usage-inference--demo)
 4. [Usage: Unified Evaluation](#-usage-unified-evaluation)
 5. [Usage: Training](#-usage-training)
-6. [Interactive Web UI](#-interactive-web-ui)
-7. [Model Zoo & Benchmarks](#-model-zoo--benchmarks)
-8. [Project Structure](#-project-structure)
+6. [Model Zoo & Benchmarks](#-model-zoo--benchmarks)
+7. [Project Structure](#-project-structure)
 
 ---
 
@@ -51,7 +78,7 @@ pip install -r requirements.txt
 
 ```
 
-*(Ensure `kornia`, `fastapi`, `uvicorn`, `PyMuPDF (fitz)`, and `pytesseract` are installed for full functionality)*.
+*(Ensure `kornia`, `fastapi`, `uvicorn`, `PyMuPDF (fitz)`, and `pytesseract` are installed for full functionality).*
 
 ---
 
@@ -261,7 +288,7 @@ python -m src.pipelines.train_e2e \
 
 ## 🌐 Interactive Web UI
 
-The project includes a production-ready FastAPI backend and an interactive drag-and-drop HTML5 canvas.
+The project includes a production-ready FastAPI backend serving the interactive HTML5 canvas.
 
 Start the server:
 
@@ -270,17 +297,14 @@ python web_app.py
 
 ```
 
-* Open your browser and navigate to: `http://localhost:8000`
-
-* **Features:** Multi-page PDF uploading, live manual corner adjustments, model toggle (High Fidelity vs. Max Readability), and Magic Ink Boost binarization.
-
-
+* Navigate to: `http://localhost:8000`
+* **Features:** Multi-page PDF processing, live manual corner adjustments, model toggle (High Fidelity vs. Max Readability), Magic Ink Boost binarization, and Batch Evaluation Dashboard.
 
 ---
 
 ## 🏆 Model Zoo & Benchmarks
 
-Our definitive experiments yielded a clear trade-off between geometric mathematical fidelity and semantic human readability, alongside peak localization achieved through joint training.
+Definitive experiments highlight the trade-off between geometric mathematical fidelity and semantic human readability, alongside peak localization achieved through joint training.
 
 | Model | Track | Checkpoint Path | PSNR (dB) | SSIM | OCR Conf. / MLE |
 | --- | --- | --- | --- | --- | --- |
@@ -302,44 +326,38 @@ CNN-Applications-Doc-Scanning-And-Enhancement/
 ├── demo.py                   # 🎯 Interactive CLI Demo & Batch Processor
 ├── evaluate.py               # 📊 Unified Evaluation Script (Synthetic & Real)
 ├── web_app.py                # 🌐 FastAPI Production Server
-├── README.md                 # This documentation
+├── README.md                 # Project Documentation
 ├── requirements.txt
 │
-├── checkpoints/              # 🧠 Model weights (Gold, Silver, Baselines)
+├── checkpoints/              # 🧠 Model Weights (Gold, Silver, Baselines)
 ├── data/                     # 📂 Datasets (clean_scans, random_backgrounds, raw)
-├── outputs/                  # 🖼️ Generated results & visualizations
-├── static/                   # 🎨 Web UI assets (index.html, script.js, style.css)
+├── outputs/                  # 🖼️ Generated Results & Visualizations
+├── static/                   # 🎨 Web UI Assets (index.html, script.js, style.css)
 │
 └── src/                      # ⚙️ Core Modules
     ├── data/
-    │   ├── dataset.py        # PyTorch DataLoaders & On-the-fly generation
-    │   ├── degradation.py    # 10+ OpenCV geometric & photometric augmentations
-    │   └── data_splitter.py  # 80/10/10 deterministic splitting logic
+    │   ├── dataset.py        # PyTorch DataLoaders & On-the-fly Generation
+    │   ├── degradation.py    # Photometric & Geometric Augmentations
+    │   └── data_splitter.py  # Deterministic Splitting Logic
     ├── evaluation/
-    │   └── ocr_metrics.py    # Tesseract OCR engine integration
+    │   └── ocr_metrics.py    # Tesseract OCR Engine Integration
     ├── models/
-    │   └── model.py          # U-Net, Regression, and Soft-Argmax architectures
+    │   └── model.py          # U-Net, Regression, and Soft-Argmax Architectures
     ├── pipelines/
-    │   ├── inference.py      # Core inference, Smart Ensemble & Gatekeepers
-    │   └── train_e2e.py      # End-to-End differentiable joint training
+    │   ├── inference.py      # Core Inference, Smart Ensemble & Gatekeepers
+    │   └── train_e2e.py      # End-to-End Differentiable Joint Training
     └── training/
-        ├── losses.py         # Custom Loss functions (L1, SSIM, Sobel)
-        └── train.py          # Core training loops & Dropout Scheduler
+        ├── losses.py         # Custom Loss Functions (L1, SSIM, Sobel)
+        └── train.py          # Core Training Loops & Dropout Scheduler
 
 ```
 
 ---
 
-## 👥 Team
+## 👥 Authors
 
-* **Developer**: Mohammad Amin Haji Alirezaei
-
-
-* **Contact**: m.a.hajialirezaei05@gmail.com
-
-
-* **GitHub**: [@mahajialirezaei](https://github.com/mahajialirezaei)
-
+* **Mohammad Amin Haji Alirezaei**
+* K. N. Toosi University of Technology
 
 ## 📄 License
 
